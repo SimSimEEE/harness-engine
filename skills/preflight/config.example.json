@@ -1,0 +1,10 @@
+{
+  "vaultDir": "$HOME/path/to/vault",
+  "_note": "머신 로컬 설정 — install.sh 가 이 파일을 config.json 으로 복사한 뒤 vaultDir 를 이 머신에 맞게 고쳐라. VAULT_DIR 환경변수가 있으면 그쪽이 우선한다. vault-sync lane 이 '이 레포가 vault 에 등록됐는가' 를 판단하는 데만 쓴다.",
+  "vaultExempt": [],
+  "_vaultExempt": "추적하지 않기로 결정한 레포 슬러그 목록 (예: [\"org/repo\"]). 미등록(등록을 안 함)과 다르다 — PR 게이트가 막지 않는다. **이 파일은 런타임에 읽히지 않는다** — install.sh 가 config.json 으로 복사할 때만 쓰인다. 면제는 머신 로컬 config.json 이나 VAULT_EXEMPT 환경변수에 넣어라.",
+  "remeasureRepos": {},
+  "overlayDir": "",
+  "_overlayDir": "오버레이 루트(조직 전용 categories/·profiles/ 를 담은 체크아웃). install.sh --overlay 가 채운다. PF_OVERLAY_DIR 환경변수가 설정돼 있으면 그쪽이 우선한다(빈 값 = 오버레이 없음).",
+  "_remeasureRepos": "사실 주장 재측정(③)이 읽어도 되는 로컬 레포 {\"이름\": \"경로\"} (예: {\"orders-api\": \"$HOME/dev/orders-api\"}). 게이트는 이 레포들을 fetch 하지 않고 이미 fetch 된 origin 기본 브랜치를 git archive 로 풀어 읽는다 — 마지막 fetch 가 7일을 넘으면 쓰지 않는다. **이 파일은 런타임에 읽히지 않는다** — 머신 로컬 config.json 이나 PF_REMEASURE_REPOS 환경변수(이름=경로,…)에 넣어라."
+}

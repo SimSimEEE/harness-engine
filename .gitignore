@@ -1,0 +1,14 @@
+.DS_Store
+*.bak
+# 머신 로컬 설정 — install.sh 가 config.example.json 에서 생성
+skills/preflight/config.json
+# qa-endpoint.sh 가 만드는 캐시
+skills/preflight/.qa-endpoints.json
+# 플러그인 빌드 산출물
+dist/
+# 플러그인 전용 훅 등록. make-plugin.sh 가 빌드 스테이징에 직접 쓰므로 레포에는 있으면 안 된다 —
+# hooks/ 는 ~/.claude/hooks 로 심링크되고, 여기 있으면 인라인 플러그인으로도 읽혀 이중 등록된다.
+# 손으로 만들어 두면 make-plugin.sh 의 dirty 판정에 걸려 빌드 SHA 가 늘 -dirty 로 찍힌다.
+hooks/hooks.json
+# 플랫폼이 ~/.claude/skills/synced 에 쓰는 동기화 스킬. --link 에서는 그 경로가 이 체크아웃이라 여기 생긴다.
+skills/synced/
