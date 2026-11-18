@@ -3589,6 +3589,12 @@ for n, f in m['fixtures'].items():
     # E2: 카테고리 없는 입력은 등록 조회를 하지 않는다(NOT_APPLICABLE) — 면제와 마찬가지로 vault 에 닿지 않는다.
     assert c['vaultLink']['status'] in ('EXEMPT', 'NOT_APPLICABLE') and a['mode'] == 'pr' and os.path.isfile(a['prBodyFile'])
 assert set(m['agents']) == {'code-reviewer', 'pr-quality', 'vault-linter', 'test-runner'} and all(m['agents'].values())
+# 다이제스트는 설치본 정의에서 뜬다. 대조할 레포는 flip.sh 의 실경로가 놓인 체크아웃이다 — 설치 루트($HOME/.claude)가
+# 아니어야 대조가 빈 대조(설치본 대 설치본)가 되지 않는다. 설치본이 체크아웃의 그 파일이면 일치다(--overlay 로 덮인 lane 은 불일치가 맞다).
+_home = os.path.realpath(os.path.expanduser('~/.claude'))
+assert set(m['agentSources']) == set(m['agents']), m['agentSources']
+for v in m['agentSources'].values():
+    assert v['source'] and v['engineRepo'] and not os.path.realpath(v['engineRepo']).startswith(_home) and isinstance(v['sameAsRepo'], bool) and (v['sameAsRepo'] or bool(os.environ.get('PF_OVERLAY_DIR'))), v
 # override 를 주지 않으면 args 에도 manifest 에도 없다 — 평소 측정은 에이전트 정의의 모델 그대로다.
 assert m['overrides'] is None and all(f['overrides'] is None for f in m['fixtures'].values())
 assert not any({'laneModel', 'laneEffort'} & set(json.load(open(f['args']))) for f in m['fixtures'].values())
@@ -3685,6 +3691,30 @@ printf '%s' "$_fs" | python3 -c 'import json,sys; d=json.load(sys.stdin); r=[x f
 _fo=$(bash "$FL" score "$FO" "vault-status-enum=$FO/m-plain.json" 2>&1); _frc=$?
 [ "$_frc" -ne 0 ] && printf '%s' "$_fo" | grep -q 'override' \
   && ok "flip score 는 override 없이 돈 결과를 override 측정으로 세지 않는다" || ng "flip score 가 다른 모델의 결과를 섞는다 [rc=$_frc]" "거부"
+
+# 측정되는 정의는 설치본이다 — 오버레이가 같은 이름을 덮으면 레포 정의가 아니라 그것이 측정된다.
+# manifest 가 레포의 agents/ 를 해시하면 "무엇을 쟀나" 가 거짓이 된다(2026-11-18 실측이 오버레이 정의로 돌았다).
+FA="$T/flip-agents"; mkdir -p "$FA"
+for _l in vault-linter code-reviewer pr-quality test-runner; do cp "$HOME/.claude/agents/$_l.md" "$FA/"; done
+printf '\n<!-- overlay variant -->\n' >> "$FA/vault-linter.md"
+PF_AGENTS_DIR="$FA" bash "$FL" prepare "$T/flip-prov" vault-status-enum > "$T/flip-prov.out" 2>&1; _frc=$?
+python3 - "$T/flip-prov" "$FA" <<'PY' 2>"$T/py.err" && [ "$_frc" -eq 0 ] && grep -q '측정되는 정의는 설치본' "$T/flip-prov.out" \
+  && ok "flip prepare 는 설치본 정의를 해시하고, 레포 정의와 다르면 그 실경로와 함께 경고한다" \
+  || ng "flip prepare 가 실제로 돌 정의를 기록하지 않는다 [rc=$_frc]$(_diag "$T/py.err")" "agentSources.source=설치본 · sameAsRepo=false · 경고"
+import hashlib, json, sys, os
+o, fa = sys.argv[1], sys.argv[2]; m = json.load(open(os.path.join(o, 'manifest.json')))
+v = m['agentSources']['vault-linter']
+assert v['source'] == os.path.realpath(os.path.join(fa, 'vault-linter.md')) and v['sameAsRepo'] is False, v
+assert m['agents']['vault-linter'] == hashlib.sha1(open(os.path.join(fa, 'vault-linter.md'), 'rb').read()).hexdigest()
+PY
+
+# 복사 설치 — flip.sh 의 실경로가 설치 루트 안이면 독립 체크아웃이 없다. 대조했다고 쓰지 않고(None) 경고한다.
+CI="$T/flip-copy"; mkdir -p "$CI/skills"; cp -RL "$HOME/.claude/skills/preflight" "$CI/skills/preflight"; cp -RL "$HOME/.claude/agents" "$CI/agents"
+PF_AGENTS_DIR="$CI/agents" bash "$CI/skills/preflight/eval/flip.sh" prepare "$T/flip-copy-out" vault-status-enum > "$T/flip-copy.out" 2>&1; _frc=$?
+python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); v=m["agentSources"]["vault-linter"]; sys.exit(0 if v["sameAsRepo"] is None and v["engineRepo"] is None else 1)' \
+    "$T/flip-copy-out/manifest.json" 2>"$T/py.err" && [ "$_frc" -eq 0 ] && grep -q '레포 정의와 대조하지 못했다' "$T/flip-copy.out" \
+  && ok "복사 설치에서는 설치본을 설치본과 대조하지 않는다 — sameAsRepo=None 과 경고" \
+  || ng "복사 설치에서 빈 대조로 일치를 주장한다 [rc=$_frc]$(_diag "$T/py.err")" "sameAsRepo=None · 경고"
 
 # 워크플로 쪽 — 블록을 떼어 스텁으로 돌린다
 _PJO="$HOME/.claude/skills/preflight/preflight.js"
