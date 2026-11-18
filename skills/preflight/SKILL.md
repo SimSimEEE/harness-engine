@@ -645,6 +645,11 @@ Rev.5 를 논하기 전에 여기서 세어야 할 것: 거부 사유 분포, wa
   워크플로를 k 번 돌린 뒤 `score` 에 결과를 넘긴다. **`agents/<lane>.md` 를 고치면 고친 전후로 잰다** —
   메타테스트는 결정론 코드만 덮고, 정의 변경이 판정을 어떻게 바꿨는지는 이것으로만 보인다.
   측정 결과는 영수증으로 기록하지 않는다. 비용이 lane 실행 k 번이라 자동으로 돌리지 않는다
+  lane 의 모델·effort 를 바꿔 비교하려면 `prepare <out> --lane-model=<lane>=<model> [--lane-effort=<lane>=<effort>]`
+  로 override 마다 `<out>` 을 따로 만든다(워크플로 `args.laneModel`·`args.laneEffort`). override 가 실린 실행은
+  verdict·lane 상태가 `MEASUREMENT_ONLY` 로 나와 영수증에 기록되지 않고(실제 판정은 `lanes[].measuredStatus`),
+  데이터 스크립트 적재(`classificationScript`)와 함께 오면 워크플로가 거부한다. 입력이 `<입력>/overlay` 를 들고 오면
+  분류는 그 오버레이만 쓴다 — `vault-*`·`node-*` 입력은 엔진 밖 규칙 없이 lane 을 고르게 하는 측정 전용 카테고리를 싣는다
 - 재측정(③) 측정: `$P/eval/flip.sh remeasure-prepare` 로 `eval/claims/remeasure-*.sh` 입력을 만들고 각 `args.json` 으로
   워크플로를 k(≥5) 번 돌린 뒤 `remeasure-score` 에 결과를 넘긴다 — 픽스처별 일치율·기대 불일치 미보고 수가 나온다
 - 각 lane 의 판정 기준: `agents/<lane>.md` (로컬 `~/.claude/agents/`, 플러그인 `<plugin>/agents/`)
