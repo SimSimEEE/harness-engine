@@ -2,6 +2,7 @@
 name: qa-reviewer
 description: qa-runner 가 수행한 QA 결과를 시니어 관점에서 심사한다. 무엇을 테스트했는지가 아니라 "이 검증이 이 서비스에 타당한가, 허술하지 않은가"를 판정한다. qa-runner 완료 후 PROACTIVELY 실행한다.
 model: opus
+effort: high
 contract:
   writes: false
   network: none
