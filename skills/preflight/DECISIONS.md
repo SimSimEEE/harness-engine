@@ -44,6 +44,20 @@ catch-all `match` 는 "겹침은 풀지 않는다" 와 충돌하므로 선언의
 
 ## 2026-11-18
 
+### 판단 역할 opus 에이전트 4개에 `effort: high` 를 명시했다
+
+- **무엇**: `change-planner`·`plan-reviewer`·`code-reviewer`·`qa-reviewer` frontmatter 에 `model: opus` 다음 줄로
+  `effort: high`. `model` 값은 그대로다.
+- **왜**: Opus 5.5 의 effort 기본값이 medium 으로 내려갔고(이전 세대 high), 메인 세션과 다른 모델로 도는 서브에이전트에는
+  세션 effort 가 적용되지 않는다. frontmatter 에 없으면 판단 lane 이 이전보다 얕게 추론한다.
+- **하지 않은 것**: opus → sonnet 하향은 하지 않는다 — 5.5 세대 가격 차가 2배이고, 이 넷은 판단·적발 역할이라 놓쳤을 때
+  비용이 더 크다. haiku 하향 후보(`vault-linter`·`test-runner`)와 `secret-scanner` 는
+  `skills/preflight/eval/flip.sh` 로 같은 입력을 k 회 돌린 판정이 기대 판정과 일치하는 비율을 잰 뒤 정한다 —
+  스크립트는 있지만 lane 모델 override 와 이 lane 들의 측정 픽스처가 아직 없다. `implementer` 는 기본(medium)을 유지한다.
+- **어디에**: 올리는 쪽은 에이전트 frontmatter 가 정본이고, `preflight.js` 의 `EFFORT` 맵은 낮추는 쪽 전용으로 남긴다
+  (`code-reviewer`·`qa-reviewer` 는 워크플로 호출에서 effort 를 넘기지 않으므로 frontmatter 값이 쓰인다).
+  `ENGINE_VERSION` 은 올리지 않는다 — 프로필 스키마와 무관하다.
+
 ### 메인 세션의 레포 직접 편집 차단
 
 **결정**: PreToolUse 훅 `hooks/main-edit-guard.sh`(matcher `Edit|Write|MultiEdit|NotebookEdit`)가 메인 세션(훅 입력에

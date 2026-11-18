@@ -198,6 +198,7 @@ const MAPPING = {
 };
 
 // 규칙 대조가 전부인 lane 은 추론 깊이가 필요 없다. 임계경로에 있는 것만 낮춘다.
+// 이 맵은 낮추는 쪽 전용이다. 올리는 쪽(판단 lane 의 effort: high)은 에이전트 frontmatter 가 정본이다.
 // secret-scanner 는 **아무것도 낮추지 않는다** — 임계경로가 아니고, 놓쳤을 때 비용이 비대칭이다.
 const EFFORT = { 'vault-linter': 'low', 'pr-quality': 'low' };
 

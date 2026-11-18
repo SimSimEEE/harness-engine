@@ -2,6 +2,7 @@
 name: code-reviewer
 description: 코드 변경에 대한 시니어 개발자 롤 컨벤션·품질 리뷰. 관례 판정 기준은 카테고리가 넘긴 관례 문서다. 코드 파일을 수정/생성한 뒤 커밋하기 전에 PROACTIVELY 실행한다. 단순 설정·문서 변경은 대상 아님.
 model: opus
+effort: high
 contract:
   writes: false
   network: none
