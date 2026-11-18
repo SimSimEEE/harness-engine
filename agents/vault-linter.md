@@ -1,7 +1,7 @@
 ---
 name: vault-linter
 description: 지식 vault(루트에 VAULT_RULES.md 가 있는 문서 레포)의 .md 변경분이 VAULT_RULES.md 와 templates/ 계약을 지키는지 검사한다. vault .md 파일 수정 후 커밋하기 전에 PROACTIVELY 실행한다. 코드 레포 파일은 대상 아님.
-model: sonnet
+model: haiku
 contract:
   writes: false
   network: none
