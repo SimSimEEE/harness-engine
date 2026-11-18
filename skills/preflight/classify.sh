@@ -410,7 +410,8 @@ if MODE == 'category':
 # tsc/jest 가 돌 수 있는 것 — test-runner 의 대상이다
 TESTABLE_EXT = ('.ts', '.tsx', '.js', '.jsx')
 # 사람이 리뷰해야 하는 소스 — 셸 스크립트도 코드다. 이 레포가 그 증거다
-CODE_EXT = TESTABLE_EXT + ('.sh', '.bash', '.mjs', '.cjs')
+# .py 는 리뷰 대상이지만 test-runner 대상은 아니다 — test-runner 는 tsc/jest 만 돈다
+CODE_EXT = TESTABLE_EXT + ('.sh', '.bash', '.mjs', '.cjs', '.py')
 def is_code(f):
     return f.endswith(CODE_EXT) and not f.endswith('.d.ts') and not f.startswith('@types/')
 
@@ -434,7 +435,7 @@ _C_LIKE = ('//', '/*', '*', '*/')
 _HASH = ('#',)
 def _commentish(f):
     # `#` 를 전역으로 넣으면 JS 비공개 필드(`#priv = 1`)를 주석으로 오인해 로직 변경을 놓친다.
-    return _HASH if f.endswith(('.sh', '.bash', '.yml', '.yaml', '.toml', '.env')) else _C_LIKE
+    return _HASH if f.endswith(('.sh', '.bash', '.py', '.yml', '.yaml', '.toml', '.env')) else _C_LIKE
 def logic_changed(f):
     if not has_head:
         return True
