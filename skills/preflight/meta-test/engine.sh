@@ -1503,6 +1503,27 @@ mkdir -p "$DS/x"; printf 'echo hi\n' > "$DS/x/run.sh"; git -C "$DS" add -A
 O=$("$CL" "$DS" commit --review 2>/dev/null)
 echo "$O" | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if "code-reviewer" in d["selected"] else 1)' 2>"$T/py.err" \
   && ok ".sh 가 code-reviewer 대상에 들어간다 (is_code)" || ng "셸 스크립트가 리뷰 대상에서 빠진다$(_diag "$T/py.err")" "is_code 에 .sh"
+# .py 도 리뷰 대상이다 — 그러나 test-runner(tsc/jest) 대상은 아니다. 없으면 Python 레포의 변경은 secret-scanner 만 고른다.
+mkdir -p "$DS/py"; printf 'def f():\n    return 1\n' > "$DS/py/m.py"; git -C "$DS" add -A
+O=$("$CL" "$DS" commit --review 2>/dev/null)
+echo "$O" | python3 -c 'import json,sys; s=json.load(sys.stdin)["selected"]; sys.exit(0 if "py/m.py" in (s.get("code-reviewer") or []) else 1)' 2>"$T/py.err" \
+  && ok ".py 가 code-reviewer 대상에 들어간다 (CODE_EXT)" || ng ".py 변경이 리뷰 대상에서 빠진다$(_diag "$T/py.err")" "code-reviewer 목록에 py/m.py"
+# 파싱 실패가 '안 골라짐' 으로 읽히지 않게 selected 키가 있는지부터 본다.
+echo "$O" | python3 -c 'import json,sys; s=json.load(sys.stdin)["selected"]; sys.exit(0 if "py/m.py" not in (s.get("test-runner") or []) else 1)' 2>"$T/py.err" \
+  && ok ".py 는 test-runner 대상이 아니다 (TESTABLE_EXT 는 tsc/jest 확장자만)" || ng ".py 로 test-runner 가 tsc/jest 를 돌린다$(_diag "$T/py.err")" "test-runner 목록에 .py 없음"
+O=$("$CL" "$DS" commit --qa 2>/dev/null)
+echo "$O" | python3 -c 'import json,sys; s=json.load(sys.stdin)["selected"]; sys.exit(0 if "py/m.py" in (s.get("qa-runner") or []) else 1)' 2>"$T/py.err" \
+  && ok ".py 로직 변경이 QA 배포물에 들어간다 (DEPLOYED_EXT 는 CODE_EXT 를 따른다)" || ng ".py 가 배포물 집합에서 빠진다$(_diag "$T/py.err")" "qa-runner 목록에 py/m.py"
+# 뒤 단언이 보는 $DS 상태를 바꾸지 않는다 — .py 를 인덱스와 워킹트리에서 뺀다.
+git -C "$DS" rm -q --cached py/m.py; rm -rf "$DS/py"
+# `#` 주석만 더한 .py 변경은 로직 변경이 아니다(_commentish). 앞 상태와 섞이지 않게 따로 만든다.
+DP="$T/depset-py"; mkdir -p "$DP"
+git init -q -b main "$DP"; git -C "$DP" config user.email t@t; git -C "$DP" config user.name t
+printf 'def f():\n    return 1\n' > "$DP/m.py"; git -C "$DP" add -A; git -C "$DP" "$G" -qm init
+printf '# 설명 한 줄\n' >> "$DP/m.py"; git -C "$DP" add -A
+O=$("$CL" "$DP" commit --review 2>/dev/null)
+echo "$O" | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if "code-reviewer" not in d["selected"] and d["notSelected"].get("code-reviewer") == "code-change-is-comment-or-format-only" else 1)' 2>"$T/py.err" \
+  && ok ".py 의 # 주석만 바뀌면 리뷰를 고르지 않는다 (_commentish)" || ng ".py 주석 변경이 로직 변경으로 읽힌다$(_diag "$T/py.err")" "code-reviewer 미선택 · code-change-is-comment-or-format-only"
 
 echo "== --review 플래그 =="
 # 리뷰를 커밋마다 돌리지 않는 것은 **비용** 결정이다. 면제가 되지 않도록 PR 게이트에서는

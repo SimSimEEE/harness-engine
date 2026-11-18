@@ -170,3 +170,24 @@ a=70 a_sessions=13 b=62 main=202 home=45 norepo=78 path_outside_repo=9
 
 `ENGINE_VERSION` 2.1 → **2.2**: 새 훅과 새 선택 설정 키(`mainEditGuard`·`mainEditGuardAllow`·오버레이 `edit-guard.json`)는
 하위 호환 기능 추가라 MINOR 다. 기본 off 라 기존 설치의 동작은 바뀌지 않고, "2.1" 프로필은 그대로 적재된다.
+
+### `.py` 를 코드로 친다 — 리뷰 대상, 테스트 대상은 아니다
+
+- **무엇**: `classify.sh` 의 `CODE_EXT` 에 `.py` 를 넣고, `_commentish` 가 `.py` 를 `#` 주석 언어로 본다. `TESTABLE_EXT` 에는
+  넣지 않았다. `.py` 로직 변경은 `code-reviewer`(`--review`·PR 게이트)와 `--qa` 의 `qa-runner`(배포물 집합 `DEPLOYED_EXT` 가
+  `CODE_EXT` 에서 파생된다)를 고르고, `test-runner` 는 `no-testable-file-change` 로 남는다.
+- **왜 (숫자)**: 처음 보는 Python 레포 스모크에서 `.py` 를 바꾼 변경의 `selected` 가 `secret-scanner` 하나, `code=[]` 였다 —
+  리뷰가 PR 게이트에서도 돌지 않는다. 확장자로 코드를 판정하는 자리는 `CODE_EXT` **1곳**이다. 거기서 파생되는 자리가
+  `DEPLOYED_EXT`(QA 배포물)·`test_files`(`TESTABLE_EXT` 로 거른다) 둘이고, 주석 판정 `_commentish` 는 별도 목록이라 같이 고쳤다.
+  lib.sh·profile.sh·profile-measure.sh·harness-profile 스킬에는 확장자 판정이 없다. 그래서 언어 목록 정본을 따로 만들지 않았다.
+- **test-runner 범위**: `test-runner` 는 eslint/tsc/jest 만 돈다. `.py` 를 `TESTABLE_EXT` 에 넣으면 Python 레포에서 없는
+  tsconfig·jest 를 돌려 실패만 만든다. Python 테스트 실행은 백로그(「Python 레포의 테스트가 돌지 않는다」)로 남겼다.
+- **ENGINE_VERSION 유지**: 프로필 스키마·설정 키가 바뀌지 않았다 — 같은 날 haiku 하향·`effort` 명시와 같은 선례다.
+- **어디**: `classify.sh`(`CODE_EXT`·`_commentish`), `meta-test/engine.sh` 「배포 동작 집합은 한 곳에서 정의된다」 절의 `.py` 단언 4개.
+
+### 프로필 결정 기록 자리를 프로필이 쓰인 레포로 바로잡았다
+
+`harness-profile` 7단계는 결정 기록을 엔진 `DECISIONS.md` 에 남기라고 했지만, `profile.sh init` 은 오버레이가 설정돼 있으면
+프로필을 오버레이의 `profiles/` 에 쓴다(공개 엔진에 레포 정보를 남기지 않는다). 그 지시대로면 프로필은 오버레이에, 그 레포
+이름이 적힌 결정 기록은 공개 엔진에 남는다. 이제 결정 기록은 프로필이 쓰인 레포 — 오버레이면 `<오버레이>/docs/DECISIONS.md`,
+없으면 엔진 `DECISIONS.md` — 에 쓰고, 둘을 같은 레포에 커밋한다. 어디: `skills/harness-profile/SKILL.md` 흐름도·7단계.

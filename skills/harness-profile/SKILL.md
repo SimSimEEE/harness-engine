@@ -6,7 +6,7 @@ description: 처음 보는 레포에 프리플라이트 하네스 프로필을 �
 # harness-profile — 레포별 프로필 생성기 (#47)
 
 ```
-status → (카테고리 확인) → measure → table → 사용자 승인 → select → profile.sh init → 스모크 → DECISIONS 기록
+status → (카테고리 확인) → measure → table → 사용자 승인 → select → profile.sh init → 스모크 → 결정 기록(프로필이 쓰인 레포)
 결정론      사용자            결정론     결정론   채팅에서 명시    결정론    결정론(적재기 확인)    결정론
 ```
 
@@ -85,14 +85,23 @@ bash $P/meta-test-isolated.sh                # 이 레포(하네스) 쪽 — 새
 
 ## 7. 결정 기록
 
-`$P/DECISIONS.md` 끝에 절을 하나 더한다 — 이 레포의 결정 기록 자리다(대상 레포가 아니다. 프로필이 이 레포에 있다):
+결정 기록은 **프로필 파일이 쓰인 레포**에 남긴다(대상 레포가 아니다). `profile.sh init` 은 오버레이가 설정돼 있으면
+(`config.json` 의 `overlayDir` 또는 `PF_OVERLAY_DIR`) 프로필을 오버레이의 `profiles/` 에, 없으면 엔진의 `$P/profiles/` 에 쓴다.
+그래서 결정 기록 자리도 둘로 갈린다:
+
+- 오버레이가 있으면 — 오버레이 레포의 결정 기록 파일(`<오버레이>/docs/DECISIONS.md`) 끝에 절을 더한다.
+- 오버레이가 없으면 — 엔진 `$P/DECISIONS.md` 끝에 절을 더한다.
+
+어느 쪽인지는 5단계 `profile.sh init` 출력의 `프로필 생성: <절대 경로>` 줄로 확인한다. `bash $P/category.sh "$R"` 의
+`profile.path` 는 `profiles/<owner>/<repo>.json` 상대 경로라 엔진·오버레이를 가르지 못한다.
+공개 엔진의 결정 기록에 대상 레포 이름을 남기지 않기 위해서다 — 프로필을 오버레이에 두는 이유와 같다.
 
 ```bash
 bash $P/profile-measure.sh table "$TMP/measure.json" "$TMP/adjustments.json"   # 승인 열이 붙은 표 — 조정이 없으면 두 번째 인자 생략
 ```
 
 절 제목은 `## <YYYY-MM-DD> — 프로필 생성: <owner>/<repo>`, 본문은 위 출력 그대로 + 카테고리 확인 사실 한 줄.
-그 뒤 프로필 파일과 DECISIONS.md 를 이 레포에 커밋한다 — 커밋은 프리플라이트 게이트를 지난다.
+그 뒤 프로필 파일과 결정 기록을 **프로필이 쓰인 그 레포**(오버레이 또는 엔진)에 커밋한다 — 커밋은 프리플라이트 게이트를 지난다.
 
 ## 하지 않는 것
 
