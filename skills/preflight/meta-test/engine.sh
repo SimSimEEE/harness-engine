@@ -3590,11 +3590,11 @@ for n, f in m['fixtures'].items():
     assert c['vaultLink']['status'] in ('EXEMPT', 'NOT_APPLICABLE') and a['mode'] == 'pr' and os.path.isfile(a['prBodyFile'])
 assert set(m['agents']) == {'code-reviewer', 'pr-quality', 'vault-linter', 'test-runner'} and all(m['agents'].values())
 # 다이제스트는 설치본 정의에서 뜬다. 대조할 레포는 flip.sh 의 실경로가 놓인 체크아웃이다 — 설치 루트($HOME/.claude)가
-# 아니어야 대조가 빈 대조(설치본 대 설치본)가 되지 않는다. 이 격리 설치본은 체크아웃의 agents/ 를 가리키므로 같다.
+# 아니어야 대조가 빈 대조(설치본 대 설치본)가 되지 않는다. 설치본이 체크아웃의 그 파일이면 일치다(--overlay 로 덮인 lane 은 불일치가 맞다).
 _home = os.path.realpath(os.path.expanduser('~/.claude'))
 assert set(m['agentSources']) == set(m['agents']), m['agentSources']
 for v in m['agentSources'].values():
-    assert v['source'] and v['engineRepo'] and not os.path.realpath(v['engineRepo']).startswith(_home) and v['sameAsRepo'] is True, v
+    assert v['source'] and v['engineRepo'] and not os.path.realpath(v['engineRepo']).startswith(_home) and isinstance(v['sameAsRepo'], bool) and (v['sameAsRepo'] or os.path.realpath(v['source']) != os.path.realpath(os.path.join(v['engineRepo'], 'agents', os.path.basename(v['source'])))), v
 # override 를 주지 않으면 args 에도 manifest 에도 없다 — 평소 측정은 에이전트 정의의 모델 그대로다.
 assert m['overrides'] is None and all(f['overrides'] is None for f in m['fixtures'].values())
 assert not any({'laneModel', 'laneEffort'} & set(json.load(open(f['args']))) for f in m['fixtures'].values())
