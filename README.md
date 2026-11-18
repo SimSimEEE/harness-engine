@@ -121,8 +121,8 @@ flowchart LR
 | `qa-runner` | sonnet | 배포된 개발(dev) 환경에 실제 요청을 보내 기능을 검증하는 QA 실행자 |
 | `requirements-tracer` | opus | change-planner 가 만든 claim 들이 실제 구현·테스트… |
 | `secret-scanner` | sonnet | 스테이징된 변경에서 시크릿·자격증명·개인 데이터 유출을 탐지한다 |
-| `test-runner` | sonnet | 대상 레포에서 eslint(변경 파일) + tsc --noEmit + jest를 실행하고… |
-| `vault-linter` | sonnet | 지식 vault(루트에 VAULT_RULES.md 가 있는 문서 레포)의 .md 변경분이… |
+| `test-runner` | haiku | 대상 레포에서 eslint(변경 파일) + tsc --noEmit + jest를 실행하고… |
+| `vault-linter` | haiku | 지식 vault(루트에 VAULT_RULES.md 가 있는 문서 레포)의 .md 변경분이… |
 | `vault-sync` | sonnet | 지식 vault 에 GitHub 연결 프로젝트로 등록된 레포가 변경됐을 때… |
 
 에이전트 정의는 있으나 `classify.sh` 의 lane 집합에 없는 것 4개: `change-planner`, `claim-remeasurer`, `implementer`, `plan-reviewer`. 무엇이 이들을 부르는지는 각 정의가 적는다 — 여기서는 유도할 수 없다.

@@ -1,7 +1,7 @@
 ---
 name: test-runner
 description: 대상 레포에서 eslint(변경 파일) + tsc --noEmit + jest를 실행하고 regression을 보고한다. 코드 파일 수정 후 커밋하기 전에 PROACTIVELY 실행한다.
-model: sonnet
+model: haiku
 contract:
   writes: true        # 격리 worktree 안에서만. 원본 워킹트리는 건드리지 않는다
   network: none

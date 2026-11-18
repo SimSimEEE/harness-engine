@@ -58,6 +58,24 @@ catch-all `match` 는 "겹침은 풀지 않는다" 와 충돌하므로 선언의
   (`code-reviewer`·`qa-reviewer` 는 워크플로 호출에서 effort 를 넘기지 않으므로 frontmatter 값이 쓰인다).
   `ENGINE_VERSION` 은 올리지 않는다 — 프로필 스키마와 무관하다.
 
+### `vault-linter`·`test-runner` 를 sonnet 에서 haiku 로 내렸다
+
+- **무엇**: 두 에이전트 frontmatter 의 `model: sonnet` → `model: haiku`. 다른 값(effort·contract)은 그대로다.
+  `preflight.js` 의 `EFFORT` 맵(`vault-linter: low`)도 그대로 — 측정이 그 값으로 돌았다.
+- **왜**: 아래 측정 장치로 입력 4개(lane 당 결함 1·대조군 1)를 모델마다 k=5 돌린 기대 판정 일치율이 haiku·sonnet 모두
+  20/20 이다. 기준은 haiku 일치율 1.0 이었다. 트랜스크립트로 lane 에이전트 20개가 override 대로 각 모델에서 10개씩
+  돈 것을 확인했다. FAIL 실행의 차단 지적은 전부 실제 결함을 가리켰고, 대조군 지적은 0건이었다.
+  측정 명령: `eval/flip.sh prepare <out> --lane-model=vault-linter=<m> --lane-model=test-runner=<m> vault-status-enum
+  vault-clean-note node-slug-regression node-slug-control` 뒤 실행마다 runId 를 달리해 k=5, `eval/flip.sh score <out> @<runs>`.
+- **치른 값**: 같은 결함이 같은 id 로 나온 비율이 낮아졌다 — 막은 실행 5회 중 최빈 id 집합 점유가 haiku 는 vault 2/5·
+  test 1/5, sonnet 은 5/5·3/5. 두 lane 은 `RULES` 어휘가 없어 lane 이 id 를 짓는다. 판정은 바뀌지 않지만 라운드 사이
+  재발 집계(`recurrence`)는 이 두 lane 에서 해소+새로 로 갈려 세질 수 있다. 재발 집계가 필요해지면 이 두 lane 에
+  어휘를 두는 것이 순서다(모델을 되돌리는 것보다). 토큰은 lane 1회 중앙값으로 haiku 가 더 쓴다(출력 약 3배) —
+  단가 차이(1/20)가 그보다 크다.
+- **한계**: lane 당 입력 2개다. 다중 결함·경계가 애매한 위반·기준선에서 이미 실패하던 테스트는 재지 않았다.
+  이 경우가 실제로 새면 그 입력을 픽스처로 더해 같은 장치로 다시 잰다.
+- **하지 않은 것**: `secret-scanner` 는 그대로 sonnet — 놓쳤을 때 공개 레포 유출로 이어진다.
+
 ### lane 모델 비교 측정 장치 — 측정 전용 override 와 픽스처 4개
 
 - **무엇**: `preflight.js` 가 `args.laneModel`·`args.laneEffort`(`{lane: 값}`)를 받아 그 lane 호출의 model·effort 만 바꾼다.
