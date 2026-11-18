@@ -44,6 +44,33 @@ catch-all `match` 는 "겹침은 풀지 않는다" 와 충돌하므로 선언의
 
 ## 2026-11-18
 
+### 측정 입력을 6개 더했다 — 다중 결함·경계·오탐 유도·동시 회귀·깨진 기준선
+
+- **무엇**: 아래 「haiku 로 내렸다」 절의 한계(lane 당 입력 2개)에 적은 경우를 입력으로 더했다 — 다중 결함
+  (`vault-multi-defect`), 형식만 틀린 경계 위반(`vault-date-format`), 위반처럼 보이는 정상 문서로 오탐을 유도하는 대조군
+  (`vault-lookalike-clean`), 두 테스트 동시 회귀(`node-multi-regression`), 기준선부터 실패하는 테스트 — 새 실패가 없으면
+  PASS 기대(`node-baseline-broken-clean`), 새 회귀가 함께 오면 FAIL 기대(`node-baseline-broken-regress`). 각 입력은 만들 때
+  전제(테스트 실패 수 등)를 스스로 확인하고 어긋나면 exit 1 이다. 깨진 기준선은 `_node_base.sh` 의 `add_broken_baseline()` 이
+  develop 에 커밋·push 한다.
+- **측정**(모델별 k=5, 측정된 정의는 측정 머신의 설치본 = 오버레이 정의 — manifest `agentSources` 로 확인):
+
+  | 입력 | 기대 | haiku | sonnet |
+  |---|---|---|---|
+  | vault-multi-defect | FAIL | 5/5 | 5/5 |
+  | vault-date-format | FAIL | 5/5 | 5/5 |
+  | vault-lookalike-clean | PASS | 5/5 | 5/5 |
+  | node-multi-regression | FAIL | 5/5 | 5/5 |
+  | node-baseline-broken-clean | PASS | 4/5 | 4/5 |
+  | node-baseline-broken-regress | FAIL | 5/5 | 5/5 |
+
+  다중 결함은 두 모델 모두 5회 전부 세 결함을 다 지적했고, 오탐 유도 대조군은 두 모델 모두 지적 0 이다.
+  `node-baseline-broken-clean` 의 FAIL 각 1회는 같은 원인이다 — lane 이 기준선 체크아웃의 HEAD 가 프롬프트의 기준 커밋과
+  다르다고 보고 기준선을 믿지 않았다(스냅숏은 트리를 풀어 새 커밋을 만들므로 HEAD 가 다르다). 모델 차이가 아니라 기준선
+  프롬프트의 모호함이다 → `docs/backlog.md` 「기준선 체크아웃의 HEAD 가 프롬프트의 기준 커밋과 달라 lane 이 기준선을 의심한다」.
+  측정 명령: `eval/flip.sh prepare <out> --lane-model=vault-linter=<m> --lane-model=test-runner=<m> <입력 6개>` 뒤 실행마다
+  runId 를 달리해 k=5, `eval/flip.sh score <out> @<runs>`.
+- **어디**: `eval/fixtures/`(입력 6개·`_node_base.sh`), `meta-test/engine.sh`(flip prepare 단언의 입력 집합).
+
 ### 판단 역할 opus 에이전트 4개에 `effort: high` 를 명시했다
 
 - **무엇**: `change-planner`·`plan-reviewer`·`code-reviewer`·`qa-reviewer` frontmatter 에 `model: opus` 다음 줄로

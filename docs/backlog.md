@@ -100,3 +100,38 @@ ZR
 **아직 표본이 없다.** 이 이벤트는 2026-09-17 에 들어갔고 그 이전 라운드는 로그에 없다 —
 위 명령의 출력이 쌓이기 전까지 이 항목의 결론 칸은 채우지 않는다.
 
+### 기준선 체크아웃의 HEAD 가 프롬프트의 기준 커밋과 달라 lane 이 기준선을 의심한다
+위치: `skills/preflight/preflight.js` 기준선 프롬프트("기준선 체크아웃 … 기준 커밋 …") · `skills/preflight/DECISIONS.md`
+2026-11-18 「측정 입력을 6개 더했다」의 측정.
+
+스냅숏은 트리 id 를 대조하므로 내용은 같은데, 프롬프트는 커밋만 준다. lane 이 HEAD 를 비교해 다르면 기준선을 버리고
+기존 실패를 새로 깨진 것으로 올린다(위 측정 `node-baseline-broken-clean` 에서 두 모델 각 1/5).
+
+→ 닫는 방법: 기준선·대상 프롬프트에 "체크아웃 HEAD 는 스냅숏이 만든 커밋이라 기준 커밋과 다르다 — 트리 id 로 대조됐다" 와
+트리 id 를 준다.
+
+**먼저 셀 것**: 실제 로그의 test-runner FAIL 중 사유에 기준선 불일치가 적힌 비율.
+
+### flip score 의 드리프트 검사가 prepare·score 사이의 재링크를 못 잡는다
+위치: `skills/preflight/eval/flip.sh` score 의 드리프트 계산.
+
+prepare 가 기록한 실경로(`agentSources[l].source`)를 다시 해시하므로, 그 사이 설치본 링크가 다른 정의로 바뀌면 워크플로는
+새 정의로 도는데 드리프트는 없다고 나온다.
+
+→ 닫는 방법: 링크 경로(`AGENTS_DIR/<lane>.md`)도 기록하고 score 때 그 실경로가 기록과 다르면 경고한다.
+
+**먼저 셀 것**: 측정 도중 설치를 바꾼 적이 있는지(없으면 우선순위 낮음).
+
+### manifest 의 `harness`·`harnessDirty` 가 파일 링크·복사 설치에서 비어 있다
+위치: `skills/preflight/eval/flip.sh` 의 `git -C REPO rev-parse HEAD` / `status --porcelain`.
+
+REPO 는 스크립트 디렉터리 기준이라 그 설치 형태에서 체크아웃이 아니다 — 커밋이 빈 문자열, dirty 가 false 로 남는다.
+
+→ 닫는 방법: `engine_checkout()` 결과로 계산하고 없으면 null.
+
+### `PF_AGENTS_DIR` 설명이 워크플로가 읽는 정의를 바꾸는 것처럼 읽힌다
+위치: `skills/preflight/eval/flip.sh` 의 `AGENTS_DIR` 주석·재측정 쪽 주석.
+
+이 변수는 flip 이 해시할 자리만 바꾼다. 세션 등록이 읽지 않는 디렉터리를 주면 manifest 가 돌지 않은 정의를 기록한다.
+
+→ 닫는 방법: 주석에 "해시할 자리만 바꾼다 — 세션이 읽는 agents 디렉터리를 줘라" 를 적는다.
