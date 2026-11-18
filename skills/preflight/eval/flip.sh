@@ -6,7 +6,12 @@
 # 같은 횟수로 다시 돌려 비교하는 것 말고는 알 방법이 없다.
 #
 # usage:
-#   flip.sh prepare <out> [fixture...]     입력을 만들고 분류해 실행 인자를 남긴다 (<out> 은 비어 있어야 한다)
+#   flip.sh prepare <out> [--lane-model=<lane>=<model>]... [--lane-effort=<lane>=<effort>]... [fixture...]
+#       입력을 만들고 분류해 실행 인자를 남긴다 (<out> 은 비어 있어야 한다).
+#       --lane-model·--lane-effort 는 그 lane 의 모델·effort 를 이 측정에서만 바꾼다(preflight.js 의
+#       args.laneModel·laneEffort). 그 lane 을 재는 입력의 args.json 에만 들어간다. 이 override 가 실린
+#       실행의 결과는 영수증에 쓸 수 없는 꼴(MEASUREMENT_ONLY)로 나온다 — 측정 전용이다.
+#       모델끼리 비교하려면 override 마다 <out> 을 따로 만든다(예: haiku 한 번, sonnet 한 번).
 #   flip.sh score <out> [--min-agree=R] [--json] <fixture>=<result> ... | @<runs-file>
 #       result 는 워크플로 결과 JSON 이거나 그것이 든 작업 출력 파일이다.
 #       runs-file 은 줄마다 "<fixture> <result>" 다.
@@ -35,16 +40,28 @@ if [ "$cmd" = prepare ]; then
     if [ -e "$out" ] && [ -n "$(ls -A "$out" 2>/dev/null)" ]; then
         echo "<out> 이 비어 있지 않다: $out — 다른 측정의 결과와 섞이지 않게 새 디렉터리를 써라" >&2; exit 2
     fi
+    ovr=(); names=()
+    for a in "$@"; do
+        case "$a" in
+            --lane-model=*=*|--lane-effort=*=*) ovr+=("$a") ;;
+            --*) echo "알 수 없는 옵션: $a" >&2; exit 2 ;;
+            *) names+=("$a") ;;
+        esac
+    done
     mkdir -p "$out/_logs"; out="$(cd "$out" && pwd -P)"
-    if [ $# -gt 0 ]; then names=("$@")
-    else names=(); for f in "$SELF"/fixtures/[!_]*.sh; do names+=("$(basename "$f" .sh)"); done
+    if [ ${#names[@]} -eq 0 ]; then
+        for f in "$SELF"/fixtures/[!_]*.sh; do names+=("$(basename "$f" .sh)"); done
     fi
+    printf '%s\n' ${ovr[@]+"${ovr[@]}"} > "$out/_logs/overrides.txt"
     for n in "${names[@]}"; do
         fx="$SELF/fixtures/$n.sh"
         [ -f "$fx" ] || { echo "없는 입력: $n" >&2; exit 2; }
         bash "$fx" "$out/$n" >/dev/null 2>"$out/_logs/$n.build.err" || { echo "입력 생성 실패: $n ($out/_logs/$n.build.err)" >&2; exit 1; }
+        # 입력이 자기 카테고리를 들고 오면(<입력>/overlay) 그것만 오버레이로 쓴다 — 이 머신의 오버레이를
+        # 섞지 않아야 입력이 고르는 lane 이 머신마다 같다. 없으면 종전대로 설치본 설정을 따른다.
+        if [ -d "$out/$n/overlay" ]; then _ov=(env PF_OVERLAY_DIR="$out/$n/overlay"); else _ov=(env); fi
         # 관측 로그를 실 로그와 섞지 않는다 — 측정 라운드가 라운드 집계에 들어가면 그 숫자를 못 믿는다.
-        PF_LOG="$out/pf.jsonl" VAULT_EXEMPT="$n/origin" "$PF/classify.sh" "$out/$n/r" pr \
+        "${_ov[@]}" PF_LOG="$out/pf.jsonl" VAULT_EXEMPT="$n/origin" "$PF/classify.sh" "$out/$n/r" pr \
             --body-file="$out/$n/body.md" > "$out/$n/classify.json" 2>"$out/_logs/$n.classify.err" \
             || { echo "분류 실패: $n ($out/_logs/$n.classify.err)" >&2; exit 1; }
     done
@@ -195,8 +212,21 @@ def sha(p):
 def agent_digests(lanes):
     return {l: sha(os.path.join(REPO, 'agents', f'{l}.md')) for l in sorted(lanes)}
 
+MODELS = ('haiku', 'sonnet', 'opus')
+EFFORTS = ('low', 'medium', 'high', 'xhigh', 'max')
+
 if CMD == 'prepare':
     fixtures, lanes_all, docs = {}, set(), set()
+    # 측정 전용 override — {lane: 값}. 값 검사는 preflight.js 도 하지만, 잘못된 값으로 k 번 돌린 뒤에
+    # 알면 비용이 이미 들었다. 여기서 먼저 막는다.
+    ovr = {'laneModel': {}, 'laneEffort': {}}
+    for a in open(os.path.join(OUT, '_logs', 'overrides.txt')).read().split():
+        key, rest = a[2:].split('=', 1)
+        lane, val = rest.split('=', 1)
+        field, allowed = ({'lane-model': ('laneModel', MODELS), 'lane-effort': ('laneEffort', EFFORTS)})[key]
+        if val not in allowed: sys.exit(f'{a}: 허용 값은 {", ".join(allowed)}')
+        if lane in ovr[field]: sys.exit(f'{a}: {lane} 의 {key} 를 두 번 줬다')
+        ovr[field][lane] = val
     for n in sorted(d for d in os.listdir(OUT) if not d.startswith('_') and os.path.isdir(os.path.join(OUT, d))):
         base = os.path.join(OUT, n)
         cls = json.load(open(os.path.join(base, 'classify.json')))
@@ -215,17 +245,26 @@ if CMD == 'prepare':
         if doc: docs.add(doc)
         args = {'repo': cls['repo'], 'mode': 'pr', 'round': 1, 'priorFindings': [],
                 'prBodyFile': os.path.join(base, 'body.md'), 'classification': cls}
+        # override 는 이 입력이 재는 lane 에만 싣는다 — 실리지 않은 lane 이름은 워크플로가 거부한다.
+        mine = {f: {l: v for l, v in m.items() if l in exp} for f, m in ovr.items()}
+        mine = {f: m for f, m in mine.items() if m}
+        args.update(mine)
         json.dump(args, open(os.path.join(base, 'args.json'), 'w'), ensure_ascii=False, indent=1)
-        fixtures[n] = {'repo': cls['repo'], 'expect': exp, 'args': os.path.join(base, 'args.json')}
+        fixtures[n] = {'repo': cls['repo'], 'expect': exp, 'args': os.path.join(base, 'args.json'),
+                       'overrides': mine or None}
         lanes_all |= set(exp)
+    unused = sorted({l for m in ovr.values() for l in m} - lanes_all)
+    if unused:
+        sys.exit(f'override 한 lane 을 재는 입력이 없다: {unused} — 입력을 고르거나 override 를 빼라')
     head = subprocess.run(['git', '-C', REPO, 'rev-parse', 'HEAD'], capture_output=True, text=True).stdout.strip()
     dirty = bool(subprocess.run(['git', '-C', REPO, 'status', '--porcelain', '--', 'agents', 'skills/preflight'],
                                 capture_output=True, text=True).stdout.strip())
     man = {'created': time.strftime('%Y-%m-%dT%H:%M:%S%z'), 'harness': head, 'harnessDirty': dirty,
            'agents': agent_digests(lanes_all), 'conventionDocs': {d: sha(d) for d in sorted(docs)},
-           'workflow': os.path.join(PF, 'preflight.js'), 'fixtures': fixtures}
+           'workflow': os.path.join(PF, 'preflight.js'), 'overrides': {f: m for f, m in ovr.items() if m} or None,
+           'fixtures': fixtures}
     json.dump(man, open(os.path.join(OUT, 'manifest.json'), 'w'), ensure_ascii=False, indent=1)
-    print(f'준비됨: {OUT}')
+    print(f'준비됨: {OUT}' + (f'  (측정 전용 override {json.dumps(man["overrides"])})' if man['overrides'] else ''))
     for n, f in fixtures.items():
         print(f'  {n:<22} 기대 {json.dumps(f["expect"])}  args: {f["args"]}')
     print(f'각 args.json 을 {man["workflow"]} 의 args 로 k 번 돌리고 결과를 score 에 넘겨라 (영수증은 남기지 마라). 실행마다 서로 다른 runId 를 args 에 더해라.')
@@ -280,13 +319,20 @@ for n, p in specs:
     # 다른 입력의 결과를 이 입력으로 세면 수치가 통째로 틀린다 — 대상 레포로 묶는다.
     if d.get('repo') != fx['repo']:
         sys.exit(f'{n}: 결과의 대상 레포가 다르다 ({d.get("repo")} ≠ {fx["repo"]}) — {p}')
+    # 다른 모델로 돈 결과를 이 측정으로 세면 비교가 통째로 틀린다 — override 를 manifest 와 대조한다.
+    want = fx.get('overrides') or {}
+    m = d.get('measurement') or {}
+    got = {f: m.get(f) for f in ('laneModel', 'laneEffort') if m.get(f)}
+    if got != want:
+        sys.exit(f'{n}: 결과의 override {json.dumps(got)} 가 prepare 의 것 {json.dumps(want)} 과 다르다 — {p}')
     runs[n].append(d)
 
 rows, failed = [], []
 for n, fx in man['fixtures'].items():
     rs = runs.get(n, [])
     for lane, want in fx['expect'].items():
-        st = [((r['lanes'].get(lane) or {}).get('status') or 'MISSING') for r in rs]
+        # 측정 전용 실행은 status 가 MEASUREMENT_ONLY 이고 실제 판정은 measuredStatus 에 있다
+        st = [((lambda v: v.get('measuredStatus') or v.get('status'))(r['lanes'].get(lane) or {}) or 'MISSING') for r in rs]
         agree = sum(s == want for s in st)
         # 같은 결함이면 id 도 같아야 재발을 셀 수 있다 — 막은 실행들 사이의 최빈 id 집합 점유율
         bid = [tuple(sorted(f['id'] for f in r.get('blocking', []) if f.get('lane') == lane))
@@ -306,13 +352,15 @@ for n, fx in man['fixtures'].items():
 now = agent_digests({r['lane'] for r in rows})
 drift = {l: (man['agents'].get(l), d) for l, d in now.items() if man['agents'].get(l) != d}
 res = {'harness': man['harness'], 'harnessDirty': man['harnessDirty'], 'agents': man['agents'],
+       'overrides': man.get('overrides'),
        'agentsChangedSincePrepare': sorted(drift), 'minAgree': min_agree, 'rows': rows,
        'failed': failed, 'verdict': 'FAIL' if failed else 'PASS'}
 if as_json:
     print(json.dumps(res, ensure_ascii=False, indent=1))
 else:
     print(f'harness {man["harness"][:7]}{" (작업 중 변경 있음)" if man["harnessDirty"] else ""}'
-          f' · agents ' + ' '.join(f'{l}={(d or "-")[:7]}' for l, d in man['agents'].items()))
+          f' · agents ' + ' '.join(f'{l}={(d or "-")[:7]}' for l, d in man['agents'].items())
+          + (f' · override {json.dumps(man["overrides"])}' if man.get('overrides') else ''))
     for r in rows:
         print(f'  {r["fixture"]:<22} {r["lane"]:<14} 기대 {r["expect"]:<4} k={r["k"]} '
               f'{json.dumps(r["statuses"])} 일치 {r["agree"]}/{r["k"]}'

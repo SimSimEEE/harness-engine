@@ -58,6 +58,25 @@ catch-all `match` 는 "겹침은 풀지 않는다" 와 충돌하므로 선언의
   (`code-reviewer`·`qa-reviewer` 는 워크플로 호출에서 effort 를 넘기지 않으므로 frontmatter 값이 쓰인다).
   `ENGINE_VERSION` 은 올리지 않는다 — 프로필 스키마와 무관하다.
 
+### lane 모델 비교 측정 장치 — 측정 전용 override 와 픽스처 4개
+
+- **무엇**: `preflight.js` 가 `args.laneModel`·`args.laneEffort`(`{lane: 값}`)를 받아 그 lane 호출의 model·effort 만 바꾼다.
+  `eval/flip.sh prepare` 가 `--lane-model=<lane>=<model>`·`--lane-effort=<lane>=<effort>` 로 그 인자를 해당 lane 을 재는
+  입력의 `args.json` 에만 싣고 manifest 에 남긴다. `score` 는 결과의 override 가 manifest 와 다르면 거부한다.
+  입력 4개: `vault-status-enum`(enum 밖 status — FAIL)·`vault-clean-note`(대조군 PASS)·`node-slug-regression`
+  (기존 테스트를 깨는 변경 — FAIL)·`node-slug-control`(대조군 PASS). 둘씩 한 값만 다르다.
+- **왜**: haiku 하향 후보 lane 은 기계적이지만(로그 76일 도구 호출 중앙값 2·5) 하향 여부는 같은 입력의 기대 판정
+  일치율로 정한다 — 기준은 haiku 일치율 1.0. 측정 없이 내리면 놓친 결함이 어디서 새는지 보이지 않는다.
+- **게이트가 약해지지 않게**: override 가 하나라도 있으면 verdict·`lanes[].status`·`receiptLanes[].status` 가 전부
+  `MEASUREMENT_ONLY` 다 — `receipt.sh` 의 통과 목록(PASS·SKIPPED·NOT_APPLICABLE)에 없어 record 가 거부한다. 데이터 스크립트
+  적재(게이트 전용 경로)와 함께 오면 워크플로가 시작 전에 거부한다. 이번 실행의 게이트 lane 이 아닌 키·허용 밖 값도 거부한다
+  (오타가 조용히 무시되면 "haiku 로 쟀다" 가 거짓이 된다).
+- **픽스처 카테고리**: 엔진에는 vault 문서 규칙이 없고, 실제 lane 은 tsc/jest 설치 상태에 흔들린다. 입력이
+  `eval/fixtures/_overlay` 를 복사해 들고 오고 `flip.sh` 가 그때만 `PF_OVERLAY_DIR` 로 준다 — 이 머신의 오버레이가 섞이지
+  않아 입력이 고르는 lane 이 머신마다 같고, 회귀 명령은 설치 없는 `node --test` 로 확정된다.
+- **하지 않은 것**: 에이전트 frontmatter 의 model 은 바꾸지 않았다 — 측정 결과를 보고 별도 변경으로 한다.
+  `secret-scanner` 는 놓쳤을 때 공개 레포 유출로 이어져 이번 측정 대상에서 뺐다.
+
 ### 메인 세션의 레포 직접 편집 차단
 
 **결정**: PreToolUse 훅 `hooks/main-edit-guard.sh`(matcher `Edit|Write|MultiEdit|NotebookEdit`)가 메인 세션(훅 입력에

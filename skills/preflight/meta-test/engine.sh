@@ -3560,13 +3560,17 @@ bash "$FL" prepare "$FE" > "$T/flip.prep" 2>&1; _frc=$?
 python3 - "$FE" <<'PY' && [ "$_frc" -eq 0 ] && ok "flip prepare: 입력마다 기대 lane 만 남기고 vault 를 면제해 인자를 남긴다" || ng "flip prepare 결과가 어긋난다 [rc=$_frc]" "rc=0, selected==expect, EXEMPT, manifest"
 import json, sys, os
 o = sys.argv[1]; m = json.load(open(os.path.join(o, 'manifest.json')))
-assert set(m['fixtures']) == {'refund-retry-double', 'refund-amount-guard', 'body-gate-terms'}, m['fixtures'].keys()
+assert set(m['fixtures']) == {'refund-retry-double', 'refund-amount-guard', 'body-gate-terms', 'vault-status-enum',
+                              'vault-clean-note', 'node-slug-regression', 'node-slug-control'}, m['fixtures'].keys()
 for n, f in m['fixtures'].items():
     a = json.load(open(f['args'])); c = a['classification']
     assert set(c['selected']) == set(f['expect']), (n, c['selected'])
     # E2: 카테고리 없는 입력은 등록 조회를 하지 않는다(NOT_APPLICABLE) — 면제와 마찬가지로 vault 에 닿지 않는다.
     assert c['vaultLink']['status'] in ('EXEMPT', 'NOT_APPLICABLE') and a['mode'] == 'pr' and os.path.isfile(a['prBodyFile'])
-assert set(m['agents']) == {'code-reviewer', 'pr-quality'} and all(m['agents'].values())
+assert set(m['agents']) == {'code-reviewer', 'pr-quality', 'vault-linter', 'test-runner'} and all(m['agents'].values())
+# override 를 주지 않으면 args 에도 manifest 에도 없다 — 평소 측정은 에이전트 정의의 모델 그대로다.
+assert m['overrides'] is None and all(f['overrides'] is None for f in m['fixtures'].values())
+assert not any({'laneModel', 'laneEffort'} & set(json.load(open(f['args']))) for f in m['fixtures'].values())
 PY
 [ "$(wc -l < "$PF_LOG" 2>/dev/null || echo 0)" = "$_pl0" ] && [ -s "$FE/pf.jsonl" ] \
   && ok "flip prepare 의 분류 라운드는 측정 디렉터리의 로그에만 남는다" || ng "flip prepare 가 관측 로그를 오염시킨다" "PF_LOG 불변, <out>/pf.jsonl 에 기록"
@@ -3619,6 +3623,81 @@ printf '%s' "$_fs" | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.ex
 _fo=$(bash "$FL" score "$FE" "refund-retry-double=$FE/other.json" 2>&1); _frc=$?
 [ "$_frc" -ne 0 ] && printf '%s' "$_fo" | grep -q '대상 레포가 다르다' \
   && ok "flip score 는 다른 레포의 결과를 이 입력으로 세지 않는다" || ng "flip score 가 다른 레포 결과를 받는다 [rc=$_frc]" "거부"
+
+# 측정 전용 lane override — 모델 비교가 다른 모델의 결과와 섞이지 않고, 게이트 기록으로 새지 않는다.
+# CONTRACT: lane-override-measurement-only
+FO="$T/flip-ovr"
+bash "$FL" prepare "$FO" --lane-model=vault-linter=haiku --lane-effort=vault-linter=low vault-status-enum node-slug-control \
+  > "$T/flip-ovr.prep" 2>&1; _frc=$?
+python3 - "$FO" <<'PY' 2>"$T/py.err" && [ "$_frc" -eq 0 ] && ok "flip prepare --lane-model/--lane-effort 는 그 lane 을 재는 입력의 args 와 manifest 에만 싣는다" || ng "flip prepare override 배관이 어긋난다 [rc=$_frc]$(_diag "$T/py.err")" "vault 입력만 laneModel·laneEffort"
+import json, sys, os
+o = sys.argv[1]; m = json.load(open(os.path.join(o, 'manifest.json')))
+want = {'laneModel': {'vault-linter': 'haiku'}, 'laneEffort': {'vault-linter': 'low'}}
+assert m['overrides'] == want, m['overrides']
+v = json.load(open(m['fixtures']['vault-status-enum']['args'])); n = json.load(open(m['fixtures']['node-slug-control']['args']))
+assert v['laneModel'] == want['laneModel'] and v['laneEffort'] == want['laneEffort'], v
+assert 'laneModel' not in n and 'laneEffort' not in n and m['fixtures']['node-slug-control']['overrides'] is None
+# 입력이 들고 온 측정 전용 카테고리로 분류됐다 — 이 머신의 오버레이가 섞이지 않는다
+assert v['classification']['category'] == 'eval-vault' and n['classification']['category'] == 'eval-node'
+assert v['classification']['vaultLink']['status'] == 'NOT_APPLICABLE'
+assert [s['cmd'] for s in n['classification']['laneMeta']['test-runner']['suites']] == ['cd <스냅숏> && node --test']
+PY
+_fb=0
+bash "$FL" prepare "$T/flip-bad1" --lane-model=vault-linter=gpt vault-clean-note >/dev/null 2>&1 && _fb=1
+bash "$FL" prepare "$T/flip-bad2" --lane-model=test-runner=haiku vault-clean-note >/dev/null 2>&1 && _fb=1
+bash "$FL" prepare "$T/flip-bad3" --lane-modle=vault-linter=haiku vault-clean-note >/dev/null 2>&1 && _fb=1
+[ "$_fb" = 0 ] && ok "flip prepare 는 허용 밖 모델·잴 입력이 없는 lane·모르는 옵션을 거부한다" || ng "flip prepare 가 잘못된 override 를 받는다" "셋 다 exit≠0"
+python3 - "$FO" <<'PY'
+import json, sys, os
+o = sys.argv[1]; m = json.load(open(os.path.join(o, 'manifest.json')))
+repo = m['fixtures']['vault-status-enum']['repo']
+meas = {'verdict': 'FAIL', 'laneModel': {'vault-linter': 'haiku'}, 'laneEffort': {'vault-linter': 'low'}}
+good = {'repo': repo, 'verdict': 'MEASUREMENT_ONLY', 'measurement': meas, 'blocking': [], 'notes': [],
+        'lanes': {'vault-linter': {'status': 'MEASUREMENT_ONLY', 'measuredStatus': 'FAIL'}}}
+json.dump(good, open(os.path.join(o, 'm-good.json'), 'w'))
+plain = {**good, 'verdict': 'FAIL', 'measurement': None, 'lanes': {'vault-linter': {'status': 'FAIL'}}}
+json.dump(plain, open(os.path.join(o, 'm-plain.json'), 'w'))
+PY
+_fs=$(bash "$FL" score "$FO" --json "vault-status-enum=$FO/m-good.json" 2>&1)
+printf '%s' "$_fs" | python3 -c 'import json,sys; d=json.load(sys.stdin); r=[x for x in d["rows"] if x["fixture"]=="vault-status-enum"][0]; sys.exit(0 if r["agree"]==1 and r["statuses"]=={"FAIL":1} and d["overrides"] else 1)' 2>"$T/py.err" \
+  && ok "flip score 는 측정 전용 결과의 measuredStatus 로 일치를 센다" || ng "flip score 가 측정 전용 결과를 못 센다$(_diag "$T/py.err")" "agree 1, FAIL"
+_fo=$(bash "$FL" score "$FO" "vault-status-enum=$FO/m-plain.json" 2>&1); _frc=$?
+[ "$_frc" -ne 0 ] && printf '%s' "$_fo" | grep -q 'override' \
+  && ok "flip score 는 override 없이 돈 결과를 override 측정으로 세지 않는다" || ng "flip score 가 다른 모델의 결과를 섞는다 [rc=$_frc]" "거부"
+
+# 워크플로 쪽 — 블록을 떼어 스텁으로 돌린다
+_PJO="$HOME/.claude/skills/preflight/preflight.js"
+{ printf 'const run = (args, laneList, clsLoad) => eval(\n'
+  sed -n '/BEGIN lane-override/,/END lane-override/p' "$_PJO" \
+    | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read() + sys.argv[1]))' ';({LANE_MODEL, LANE_EFFORT, MEASURE_ONLY, markMeasurementOnly})'
+  printf ');\n'
+  cat <<'JS'
+const L = ['vault-linter', 'secret-scanner'];
+const throws = (a, l = L, c = { sha256: null }) => { try { run(a, l, c); return false; } catch { return true; } };
+const plain = run({}, L, { sha256: null });
+const lp = { 'vault-linter': { status: 'FAIL' } };
+const o = run({ laneModel: { 'vault-linter': 'haiku' }, laneEffort: { 'vault-linter': 'low' } }, L, { sha256: null });
+const lo = o.markMeasurementOnly({ 'vault-linter': { status: 'FAIL' }, 'secret-scanner': { status: 'PASS' } });
+const ok = !plain.MEASURE_ONLY && plain.markMeasurementOnly(lp)['vault-linter'].status === 'FAIL'
+  && o.MEASURE_ONLY && o.LANE_MODEL['vault-linter'] === 'haiku' && o.LANE_EFFORT['vault-linter'] === 'low'
+  && lo['vault-linter'].status === 'MEASUREMENT_ONLY' && lo['vault-linter'].measuredStatus === 'FAIL'
+  && lo['secret-scanner'].status === 'MEASUREMENT_ONLY'
+  && throws({ laneModel: { 'vault-linter': 'haiku' } }, L, { sha256: 'a'.repeat(64) })   // 게이트 경로
+  && throws({ laneModel: { 'test-runner': 'haiku' } })                                  // 이번 lane 아님
+  && throws({ laneModel: { 'vault-linter': 'gpt' } }) && throws({ laneEffort: { 'vault-linter': 'huge' } })
+  && throws({ laneModel: ['haiku'] }) && throws({ laneModel: 'haiku' });
+process.exit(ok ? 0 : 1);
+JS
+} > "$T/lo.js"
+node "$T/lo.js" 2>"$T/py.err" && ok "워크플로 override: 측정 전용이면 lane 상태를 MEASUREMENT_ONLY 로 바꾸고, 게이트 경로·남의 lane·허용 밖 값은 거부한다" \
+  || ng "워크플로 override 블록이 어긋난다$(_diag "$T/py.err")" "MEASUREMENT_ONLY · 거부 6종"
+grep -qF "...(LANE_MODEL[lane] ? { model: LANE_MODEL[lane] } : {})," "$_PJO" && grep -qF "...(LANE_EFFORT[lane] ? { effort: LANE_EFFORT[lane] } : {}) }," "$_PJO" \
+  && [ "$(grep -c 'markMeasurementOnly(lanes);' "$_PJO")" = 1 ] && grep -qF "verdict: MEASURE_ONLY ? 'MEASUREMENT_ONLY' : verdict," "$_PJO" \
+  && ok "override 는 게이트 lane 호출에만 실리고, 결과의 verdict·lane 상태가 측정 전용 꼴로 나간다" || ng "override 배관이 어긋난다" "opts · markMeasurementOnly · verdict"
+IX="$T/mo"; rm -rf "$IX"; mkdir -p "$IX"; git init -q -b main "$IX"
+PF_LOG="$T/mo.jsonl" "$R" record commit "$IX" '{"vault-linter":{"status":"MEASUREMENT_ONLY"}}' '{}' >/dev/null 2>&1; _frc=$?
+[ "$_frc" -ne 0 ] && grep -q '"reason": *"lane-status"' "$T/mo.jsonl" \
+  && ok "측정 전용 lane 상태는 게이트 기록이 거부한다" || ng "MEASUREMENT_ONLY 가 기록된다 [rc=$_frc]" "lane-status 거부"
 
 echo "== 검사 대상은 커밋될 인덱스다 (#8 P1) =="
 # 분류의 변경 집합·내용 판정·다이제스트는 워킹트리가 아니라 커밋될 인덱스(PR 은 base..HEAD)를 본다.

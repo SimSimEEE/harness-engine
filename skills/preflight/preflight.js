@@ -17,6 +17,7 @@ export const meta = {
 //         findingIds, baseline, report, next }  ← findingIds 가 다음 라운드 args.priorFindings 의 입력이다
 //       notes 는 판정을 바꾸지 않는 참고 findings 다 — 없으면 verdict=PASS 로 온 것이 사라진다.
 //       claimRemeasure 는 사실 주장 재측정(③)의 대상·결과다 — 판정·영수증에 들어가지 않는다(대상이 없으면 null).
+//       measurement 는 측정 전용 lane override(args.laneModel·laneEffort)다 — 있으면 verdict·lane 상태가 MEASUREMENT_ONLY 다.
 // ─────────────────────────────────────────────────────────────────────────────
 // BEGIN classification-load — meta-test 가 이 구간만 떼어 실행한다. 바깥 이름을 참조하지 마라.
 // CONTRACT: classification-file-verified
@@ -387,6 +388,46 @@ const laneSchema = lane => {
 const BASELINE_VERDICT = laneSchema('baseline');
 
 const laneList = [...new Set([...Object.keys(selected), ...gateChains.flat()])].filter(l => !seqLanes.has(l));
+
+// ── 측정 전용 lane 모델·effort override — eval/flip.sh 가 같은 입력을 모델별로 잴 때만 쓴다.
+// 형태는 `{lane: 값}` 이다. 에이전트 frontmatter 의 model·effort 를 이 실행의 해당 lane 에서만 바꾼다.
+// 게이트를 약하게 만드는 통로가 되지 않게 두 겹으로 막는다:
+//   ① 데이터 스크립트 적재(classificationScript — 게이트 전용 경로)와 함께 오면 거부한다.
+//   ② override 가 하나라도 있으면 결과가 영수증에 쓸 수 없는 꼴이 된다 — verdict·lanes[].status·
+//      receiptLanes[].status 가 전부 MEASUREMENT_ONLY 이고(receipt.sh 의 통과 목록에 없다 → record 거부),
+//      실제 판정은 lanes[].measuredStatus 에만 남는다(채점기가 읽는다).
+// 키는 이번 실행의 lane 이어야 한다 — 오타가 조용히 무시되면 "haiku 로 쟀다" 가 거짓이 된다.
+// CONTRACT: lane-override-measurement-only
+// BEGIN lane-override — meta-test 가 이 구간만 떼어 args·laneList·clsLoad 스텁과 함께 실행한다.
+const LANE_OVERRIDE_VALUES = {
+    laneModel: ['haiku', 'sonnet', 'opus'],
+    laneEffort: ['low', 'medium', 'high', 'xhigh', 'max'],
+};
+const laneOverride = name => {
+    const v = args?.[name];
+    if (v == null) return {};
+    if (typeof v !== 'object' || Array.isArray(v)) throw new Error(`args.${name} 는 {lane: 값} 객체다`);
+    for (const [l, x] of Object.entries(v)) {
+        // QA 체인(seqLanes)은 이 override 가 닿지 않는 별도 호출이다 — 받으면 적용됐다고 거짓말하게 된다.
+        if (!laneList.includes(l))
+            throw new Error(`args.${name} 의 lane "${l}" 은 이번 실행의 게이트 lane 이 아니다 (${laneList.join(', ') || '없음'})`);
+        if (!LANE_OVERRIDE_VALUES[name].includes(x))
+            throw new Error(`args.${name}["${l}"] = ${JSON.stringify(x)} — 허용 값: ${LANE_OVERRIDE_VALUES[name].join(', ')}`);
+    }
+    return { ...v };
+};
+const LANE_MODEL = laneOverride('laneModel');
+const LANE_EFFORT = laneOverride('laneEffort');
+const MEASURE_ONLY = Object.keys(LANE_MODEL).length + Object.keys(LANE_EFFORT).length > 0;
+if (MEASURE_ONLY && clsLoad.sha256 !== null)
+    throw new Error('args.laneModel·laneEffort 는 측정 전용이다 — 게이트 경로(classificationScript)에서는 받지 않는다');
+// 측정 전용 실행의 lane 상태를 영수증에 쓸 수 없는 꼴로 바꾼다. 실제 판정은 measuredStatus 로 옮긴다.
+const markMeasurementOnly = lanes => {
+    if (!MEASURE_ONLY) return lanes;
+    for (const v of Object.values(lanes)) { v.measuredStatus = v.status; v.status = 'MEASUREMENT_ONLY'; }
+    return lanes;
+};
+// END lane-override
 
 // 라운드 간 기억. 게이트는 diff 만 보므로 "이번 것이 저번과 같은 부류인가" 를 아무도 묻지
 // 않았고, 같은 부류가 한 층씩 내려가며 네 번 재발했다. 직전 id 를 넘겨 재발을 세게 한다.
@@ -1151,7 +1192,10 @@ async function runGateLane(lane) {
             `- **파일을 수정하거나 커밋하지 마라.** 판정만 낸다.\n` +
             `- 지적거리를 억지로 만들지 마라. 깨끗하면 findings 를 비우고 PASS 를 내라.`,
         { agentType: lane, label: lane, phase: 'Gate', schema: laneSchema(lane),
-          ...(EFFORT[lane] ? { effort: EFFORT[lane] } : {}) },
+          ...(EFFORT[lane] ? { effort: EFFORT[lane] } : {}),
+          // 측정 전용 override 가 마지막이다 — 주어진 lane 에서만 위 값을 덮는다(CONTRACT: lane-override-measurement-only)
+          ...(LANE_MODEL[lane] ? { model: LANE_MODEL[lane] } : {}),
+          ...(LANE_EFFORT[lane] ? { effort: LANE_EFFORT[lane] } : {}) },
     ).catch(() => null);
 }
 
@@ -1421,11 +1465,17 @@ const report =
           (recur.unchecked.length ? `\n  판단 불가 — 이번에 안 돈 lane · 이번 대상 밖 파일 · id 를 lane 이 짓는 lane: ${recur.unchecked.join(', ')}` : '')
         : '');
 
+// 측정 전용 실행은 영수증에 쓸 수 없는 꼴로 낸다(CONTRACT: lane-override-measurement-only).
+// 판정·보고는 위에서 평소대로 계산했다 — 바꾸는 것은 밖으로 나가는 상태 필드뿐이다.
+markMeasurementOnly(lanes);
+
 return {
     repo,
     mode,
     round,
-    verdict,                 // PASS | NEEDS_CONFIRM | FAIL
+    verdict: MEASURE_ONLY ? 'MEASUREMENT_ONLY' : verdict,   // PASS | NEEDS_CONFIRM | FAIL (측정 전용이면 MEASUREMENT_ONLY)
+    // 측정 전용 override 가 있었으면 그 값, 없으면 null — 채점기가 manifest 와 대조한다
+    measurement: MEASURE_ONLY ? { verdict, laneModel: LANE_MODEL, laneEffort: LANE_EFFORT } : null,
     lanes,                   // 전체 lane 상태 + findings 원본 (사람이 볼 것)
     // 영수증은 판정에 쓰는 필드만 담는다 — findings 원본까지 넣으면 영수증이 붓는다.
     // waived 는 여기서 세팅하지 않는다: 승인은 사람이 하고, 호출자가 이 객체를 고쳐
@@ -1454,8 +1504,9 @@ return {
     } : null,
     baseline: baseline?.metrics ?? null,
     report,
-    next:
-        verdict === 'PASS'
+    next: MEASURE_ONLY
+        ? '측정 전용 실행이다(laneModel·laneEffort override) — receipt.sh record 로 기록하지 마라. 기록해도 MEASUREMENT_ONLY 상태라 거부된다. 판정은 lanes[].measuredStatus 에 있다.'
+        : verdict === 'PASS'
             ? 'receipt.sh record 로 기록해라. 스테이징은 분류 전에 끝났어야 한다 (git add → classify 순서) — **분류 뒤 인덱스가 바뀌면 재분류**하라(record 가 index-changed 로 거부한다). **워크플로 결과의 Transcript dir 을 마지막 인자로 그대로 넘겨라** — 넘겨야 실행 사실·순서·승인 흔적이 검증된다.'
             : verdict === 'NEEDS_CONFIRM'
               ? '사용자에게 warning 을 보이고 승인받아라. 승인받으면 해당 lane 만 {"status":"PASS","waived":true,"originalStatus":"WARNING","reason":"<승인 내용>"} 로 바꿔 기록한다. **전사 디렉터리를 record 에 넘기면** waived 없는 승격을 receipt 가 거부한다 (안 넘기면 규약일 뿐 강제되지 않는다).'
