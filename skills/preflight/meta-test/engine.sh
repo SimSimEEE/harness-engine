@@ -3582,7 +3582,9 @@ python3 - "$FE" <<'PY' && [ "$_frc" -eq 0 ] && ok "flip prepare: 입력마다 �
 import json, sys, os
 o = sys.argv[1]; m = json.load(open(os.path.join(o, 'manifest.json')))
 assert set(m['fixtures']) == {'refund-retry-double', 'refund-amount-guard', 'body-gate-terms', 'vault-status-enum',
-                              'vault-clean-note', 'node-slug-regression', 'node-slug-control'}, m['fixtures'].keys()
+                              'vault-clean-note', 'node-slug-regression', 'node-slug-control',
+                              'vault-multi-defect', 'vault-date-format', 'vault-lookalike-clean', 'node-multi-regression',
+                              'node-baseline-broken-clean', 'node-baseline-broken-regress'}, m['fixtures'].keys()
 for n, f in m['fixtures'].items():
     a = json.load(open(f['args'])); c = a['classification']
     assert set(c['selected']) == set(f['expect']), (n, c['selected'])

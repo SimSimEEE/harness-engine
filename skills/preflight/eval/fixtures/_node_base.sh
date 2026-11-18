@@ -41,3 +41,17 @@ JS
 node --test >/dev/null
 git add -A; git commit -qm "feat: add slugify"; git push -q origin develop
 git remote set-head origin develop
+
+# 깨진 기준선 — 지금 구현이 못 맞추는 테스트 하나를 develop 에 커밋·push 한다. 브랜치가 새로 깨는 것과 구별하게 한다.
+add_broken_baseline() {
+    cat >> test/slugify.test.js <<'JS'
+
+test('folds accented letters', () => {
+    assert.equal(slugify('Café'), 'cafe');
+});
+JS
+    local o; o="$(node --test 2>&1 || true)"
+    echo "$o" | grep -qE '^# fail 1$' || { echo "기준선 실패가 정확히 1개여야 한다: $(echo "$o" | grep -E '^# (pass|fail) ')" >&2; exit 1; }
+    git commit -qam "test: expect accented letters to fold"
+    git push -q origin develop
+}
