@@ -3594,7 +3594,7 @@ assert set(m['agents']) == {'code-reviewer', 'pr-quality', 'vault-linter', 'test
 _home = os.path.realpath(os.path.expanduser('~/.claude'))
 assert set(m['agentSources']) == set(m['agents']), m['agentSources']
 for v in m['agentSources'].values():
-    assert v['source'] and v['engineRepo'] and not os.path.realpath(v['engineRepo']).startswith(_home) and isinstance(v['sameAsRepo'], bool) and (v['sameAsRepo'] or os.path.realpath(v['source']) != os.path.realpath(os.path.join(v['engineRepo'], 'agents', os.path.basename(v['source'])))), v
+    assert v['source'] and v['engineRepo'] and not os.path.realpath(v['engineRepo']).startswith(_home) and isinstance(v['sameAsRepo'], bool) and (v['sameAsRepo'] or bool(os.environ.get('PF_OVERLAY_DIR'))), v
 # override 를 주지 않으면 args 에도 manifest 에도 없다 — 평소 측정은 에이전트 정의의 모델 그대로다.
 assert m['overrides'] is None and all(f['overrides'] is None for f in m['fixtures'].values())
 assert not any({'laneModel', 'laneEffort'} & set(json.load(open(f['args']))) for f in m['fixtures'].values())

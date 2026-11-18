@@ -229,7 +229,7 @@ def engine_checkout():
     if e: return os.path.realpath(os.path.expanduser(e))
     f = os.path.realpath(os.environ.get('FLIP_FILE') or '')
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(f))))   # <root>/skills/preflight/eval/flip.sh
-    if os.path.realpath(root) == os.path.realpath(os.path.dirname(AGENTS_DIR)): return None
+    if os.path.realpath(root) in (os.path.realpath(os.path.dirname(AGENTS_DIR)), os.path.realpath(os.path.expanduser('~/.claude'))): return None
     return root if os.path.isdir(os.path.join(root, 'agents')) else None
 ENGINE = engine_checkout()
 def agent_provenance(lanes):
@@ -387,7 +387,8 @@ for n, fx in man['fixtures'].items():
         rows.append(row)
         if not rs or row['agreeRate'] < min_agree: failed.append(f'{n}/{lane}')
 
-now = agent_digests({r['lane'] for r in rows})
+# 드리프트는 prepare 가 기록한 경로를 다시 해시해 본다 — score 쪽 환경(PF_AGENTS_DIR)이 달라도 같은 파일을 대조한다
+now = {l: (lambda s: sha(s) if s else None)(((man.get('agentSources') or {}).get(l) or {}).get('source')) if man.get('agentSources') else agent_digests({l})[l] for l in {r['lane'] for r in rows}}
 drift = {l: (man['agents'].get(l), d) for l, d in now.items() if man['agents'].get(l) != d}
 res = {'harness': man['harness'], 'harnessDirty': man['harnessDirty'], 'agents': man['agents'],
        'agentSources': man.get('agentSources'), 'overrides': man.get('overrides'),
