@@ -56,6 +56,18 @@ git clone https://github.com/SimSimEEE/harness-engine.git ~/dev/harness-engine
   meta-test.d/*.sh                 엔진 meta-test 에 덧붙일 스위트(선택)
 ```
 
+### 오버레이의 엔진 핀
+
+오버레이는 핀 파일(예: `ENGINE_PIN`, 두 줄 `version=<MAJOR.MINOR>` · `commit=<40자 해시>`)로 설치할 엔진을 고정할 수 있다.
+엔진 쪽 기준은 `skills/preflight/ENGINE_VERSION`(손으로 올리는 한 줄 `MAJOR.MINOR`)이다.
+
+- 엔진 `ENGINE_VERSION` 을 올리는 PR 이 머지되면, 그 엔진을 쓰는 오버레이는 핀의 `version`·`commit` 을 같이 올리는 PR 을 낸다. `commit` 은 엔진 PR 의 머지 커밋이다.
+- 올리지 않으면 오버레이 설치가 버전 불일치로 실패한다(exit 3). 의도한 동작이다 — 계약이 바뀐 엔진 위에 검증되지 않은 오버레이를 얹지 않는다(fail-closed).
+- 버전이 같고 커밋만 다르면 설치는 경고만 한다. 그러나 오버레이의 회귀 스위트는 돌지 않는다.
+- 엔진 버전을 올리지 않는 변경(문서·`LICENSE` 등)은 핀을 바꿀 필요가 없다.
+- 갱신 순서: 엔진 PR 머지 → 머지 커밋 해시 확인 → 핀 `version`·`commit` 갱신 → 그 엔진 체크아웃으로 오버레이 회귀 스위트 실행 → 오버레이 PR → 머지 뒤 머신마다 엔진·오버레이 체크아웃 pull 후 재설치.
+- 핀 PR 은 한 번에 하나만 연다. 둘이 열리면 같은 두 줄에서 충돌한다.
+
 ## 쓰기
 
 - `/preflight` — 커밋·PR 전 게이트(`skills/preflight/SKILL.md`). 훅이 기록 없는 `git commit`·`gh pr create` 를 막는다.
