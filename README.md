@@ -132,6 +132,7 @@ flowchart LR
 | 이벤트 | matcher | 스크립트 | timeout |
 |---|---|---|---|
 | PreToolUse | `Bash` | `preflight-gate.sh` | 15s |
+| PreToolUse | `Edit\|Write\|MultiEdit\|NotebookEdit` | `main-edit-guard.sh` | 5s |
 | PostToolUse | `Edit\|Write\|MultiEdit\|NotebookEdit\|Bash` | `edit-observe.sh` | 5s |
 | UserPromptSubmit | `*` | `category-context.sh` | 5s |
 

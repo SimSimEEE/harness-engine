@@ -7,11 +7,19 @@
 # 오버레이(<dir>)는 조직 전용 카테고리·프로필·에이전트를 담은 레포다. 그 아래
 #   agents/*.md · skills/<이름>/ · hooks/*  — 엔진 것 위에 같은 이름을 덮는다(엔진 먼저, 오버레이 나중)
 #   categories/ · profiles/               — 설치본 config.json 의 overlayDir 로 분류기에 더한다(classify.sh)
+#   edit-guard.json                       — 메인 세션 편집 차단 훅의 모드·allowlist(같은 overlayDir 로 읽는다)
 #   settings.hooks.json                   — 엔진 조각과 함께 ~/.claude/settings.json 에 병합한다
 # 를 읽는다. 오버레이 없이 설치하면 엔진 카테고리(shell-tool·generic)만 쓴다.
 #
 # 공통으로 ~/.claude/settings.json 의 hooks 에 settings.hooks.json 의 항목(이벤트마다)을 병합하고,
 # skills/preflight/config.json 이 없으면 config.example.json 에서 만든다.
+# 훅은 hooks/*.sh 를 통째로 배치하고 settings.hooks.json 의 등록을 병합하므로 새 훅에 이 파일을 고칠 필요가 없다:
+#   PreToolUse        Bash                                   preflight-gate.sh    커밋·PR 게이트
+#   PreToolUse        Edit|Write|MultiEdit|NotebookEdit      main-edit-guard.sh   메인 세션의 레포 직접 편집 차단(기본 off)
+#   PostToolUse       Edit|Write|MultiEdit|NotebookEdit|Bash edit-observe.sh      편집 관측
+#   UserPromptSubmit  *                                      category-context.sh  카테고리 표시
+# main-edit-guard 의 모드는 config.json 의 mainEditGuard(머신 탈출구, 비면 다음) > 오버레이 <dir>/edit-guard.json
+# 의 mainEditGuard > off 다(PF_MAIN_EDIT_GUARD 환경변수가 가장 앞). 엔진은 켜지 않는다 — 켜는 것은 오버레이·머신 몫이다.
 # 기존 항목을 치울 때는 ~/.claude/backups/harness-engine-<ts>/ 로 옮긴다. 삭제하지 않는다.
 set -euo pipefail
 
@@ -102,7 +110,7 @@ for name in agents skills hooks; do
     fi
 done
 
-# 오버레이의 categories·profiles 자리. 링크 모드는 오버레이 체크아웃을 그대로 가리키고,
+# 오버레이의 categories·profiles·edit-guard.json 자리. 링크 모드는 오버레이 체크아웃을 그대로 가리키고,
 # 복사 모드는 체크아웃이 사라져도 분류가 서도록 ~/.claude/harness-overlay 로 복사한다.
 OVDIR=""
 if [ -n "$OV" ]; then
@@ -111,8 +119,8 @@ if [ -n "$OV" ]; then
     else
         OVDIR="$DST/harness-overlay"
         rm -rf "$OVDIR"; mkdir -p "$OVDIR"
-        for d in categories profiles; do [ -d "$OV/$d" ] && cp -R "$OV/$d" "$OVDIR/$d"; done
-        echo "copy:   $OV/{categories,profiles} -> $OVDIR"
+        for d in categories profiles edit-guard.json; do [ -e "$OV/$d" ] && cp -R "$OV/$d" "$OVDIR/$d"; done
+        echo "copy:   $OV/{categories,profiles,edit-guard.json} -> $OVDIR"
     fi
 fi
 

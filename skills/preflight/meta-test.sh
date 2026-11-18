@@ -12,6 +12,7 @@
 #   <오버레이>/categories/<이름>/meta-test.sh  오버레이 카테고리 규칙(lib.sh pf_overlay_dir) — 엔진 카테고리 다음, 그 선언 순서
 #   meta-test/category-hook.sh                요청 시점 카테고리 표시 훅(#47)
 #   meta-test/edit-observe.sh                 메인 편집 관측 훅·구현 위임 정의(#88)
+#   meta-test/edit-guard.sh                   메인 세션 레포 편집 차단 훅
 #   meta-test/profile-init.sh                 처음 보는 레포 확인 절차(#47)
 #   meta-test/profile-measure.sh              프로필 생성기 — 현황 점검·이력 실측·승인 조정 기록(#47)
 #   meta-test/overlay.sh                      오버레이 루트·기본 카테고리(fallback)·루트 사이 겹침
@@ -21,7 +22,7 @@ set -uo pipefail
 
 # 스크립트가 중간에 cd 하므로 **시작 시점에** 절대경로를 잡는다.
 MT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-_mt_engine=(lib.sh engine.sh category-hook.sh edit-observe.sh profile-init.sh profile-measure.sh overlay.sh)
+_mt_engine=(lib.sh engine.sh category-hook.sh edit-observe.sh edit-guard.sh profile-init.sh profile-measure.sh overlay.sh)
 for _f in "$MT_DIR"/meta-test/*.sh; do
     case " ${_mt_engine[*]} " in *" ${_f##*/} "*) ;; *) echo "meta-test: 목록에 없는 파일 — 드라이버에 넣거나 지워라: $_f" >&2; exit 2 ;; esac
 done
@@ -40,7 +41,7 @@ if [ -n "$MT_OVERLAY" ] && [ -f "$MT_OVERLAY/categories/categories.json" ]; then
         [ -f "$MT_OVERLAY/categories/$_c/meta-test.sh" ] && MT_FILES+=("$MT_OVERLAY/categories/$_c/meta-test.sh")
     done <<< "$_mt_ocats"
 fi
-MT_FILES+=("$MT_DIR/meta-test/category-hook.sh" "$MT_DIR/meta-test/edit-observe.sh" "$MT_DIR/meta-test/profile-init.sh" "$MT_DIR/meta-test/profile-measure.sh" "$MT_DIR/meta-test/overlay.sh")
+MT_FILES+=("$MT_DIR/meta-test/category-hook.sh" "$MT_DIR/meta-test/edit-observe.sh" "$MT_DIR/meta-test/edit-guard.sh" "$MT_DIR/meta-test/profile-init.sh" "$MT_DIR/meta-test/profile-measure.sh" "$MT_DIR/meta-test/overlay.sh")
 if [ -n "$MT_OVERLAY" ] && [ -d "$MT_OVERLAY/meta-test.d" ]; then
     for _f in "$MT_OVERLAY"/meta-test.d/*.sh; do [ -f "$_f" ] && MT_FILES+=("$_f"); done
 fi
