@@ -202,7 +202,7 @@ PY
 exit $?
 fi
 
-OUT="$out" SELF="$SELF" PF="$PF" CMD="$cmd" python3 - "$@" <<'PY'
+OUT="$out" SELF="$SELF" PF="$PF" CMD="$cmd" FLIP_FILE="$SELF/$(basename "${BASH_SOURCE[0]}")" python3 - "$@" <<'PY'
 import hashlib, json, os, subprocess, sys, collections, time
 OUT, SELF, PF, CMD = (os.environ[k] for k in ('OUT', 'SELF', 'PF', 'CMD'))
 REPO = os.path.dirname(os.path.dirname(PF))
@@ -220,16 +220,31 @@ def agent_source(l):
     return os.path.realpath(p) if os.path.exists(p) else None
 def agent_digests(lanes):
     return {l: sha(agent_source(l)) if agent_source(l) else None for l in sorted(lanes)}
+# 대조할 레포 정의는 **이 스크립트 파일이 실제로 놓인 체크아웃**의 agents/ 다. REPO(스크립트 디렉터리 기준)는
+# 파일 단위 링크 설치·복사 설치에서 설치 루트 자체가 되어, 설치본을 설치본과 비교하는 빈 대조가 된다.
+# 체크아웃이 설치 루트와 같으면(복사 설치) 독립적으로 대조할 수 없다 — sameAsRepo 를 None 으로 남긴다.
+# PF_ENGINE_REPO 로 체크아웃을 직접 준다.
+def engine_checkout():
+    e = os.environ.get('PF_ENGINE_REPO')
+    if e: return os.path.realpath(os.path.expanduser(e))
+    f = os.path.realpath(os.environ.get('FLIP_FILE') or '')
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(f))))   # <root>/skills/preflight/eval/flip.sh
+    if os.path.realpath(root) == os.path.realpath(os.path.dirname(AGENTS_DIR)): return None
+    return root if os.path.isdir(os.path.join(root, 'agents')) else None
+ENGINE = engine_checkout()
 def agent_provenance(lanes):
     out = {}
     for l in sorted(lanes):
         src = agent_source(l)
-        out[l] = {'source': src, 'sameAsRepo': bool(src) and sha(src) == sha(os.path.join(REPO, 'agents', f'{l}.md'))}
+        same = None if not (src and ENGINE) else sha(src) == sha(os.path.join(ENGINE, 'agents', f'{l}.md'))
+        out[l] = {'source': src, 'engineRepo': ENGINE, 'sameAsRepo': same}
     return out
 def warn_provenance(prov):
     for l, v in prov.items():
         if not v['source']:
             print(f'⚠ {l}: 설치본에 정의가 없다({AGENTS_DIR}) — 워크플로가 이 lane 을 해석하지 못하거나 다른 곳의 정의를 쓴다')
+        elif v['sameAsRepo'] is None:
+            print(f'⚠ {l}: 측정되는 정의 {v["source"]} 를 레포 정의와 대조하지 못했다(설치 형태상 체크아웃을 못 찾음) — PF_ENGINE_REPO 로 체크아웃을 줘라')
         elif not v['sameAsRepo']:
             print(f'⚠ {l}: 측정되는 정의는 설치본 {v["source"]} 이다 — 이 레포의 agents/{l}.md 와 내용이 다르다')
 

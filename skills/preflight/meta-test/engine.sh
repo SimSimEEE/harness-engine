@@ -3589,8 +3589,12 @@ for n, f in m['fixtures'].items():
     # E2: 카테고리 없는 입력은 등록 조회를 하지 않는다(NOT_APPLICABLE) — 면제와 마찬가지로 vault 에 닿지 않는다.
     assert c['vaultLink']['status'] in ('EXEMPT', 'NOT_APPLICABLE') and a['mode'] == 'pr' and os.path.isfile(a['prBodyFile'])
 assert set(m['agents']) == {'code-reviewer', 'pr-quality', 'vault-linter', 'test-runner'} and all(m['agents'].values())
-# 다이제스트는 설치본 정의에서 뜬다 — 이 격리 설치본은 체크아웃의 agents/ 를 가리키므로 레포 정의와 같다
-assert set(m['agentSources']) == set(m['agents']) and all(v['source'] and v['sameAsRepo'] for v in m['agentSources'].values()), m['agentSources']
+# 다이제스트는 설치본 정의에서 뜬다. 대조할 레포는 flip.sh 의 실경로가 놓인 체크아웃이다 — 설치 루트($HOME/.claude)가
+# 아니어야 대조가 빈 대조(설치본 대 설치본)가 되지 않는다. 이 격리 설치본은 체크아웃의 agents/ 를 가리키므로 같다.
+_home = os.path.realpath(os.path.expanduser('~/.claude'))
+assert set(m['agentSources']) == set(m['agents']), m['agentSources']
+for v in m['agentSources'].values():
+    assert v['source'] and v['engineRepo'] and not os.path.realpath(v['engineRepo']).startswith(_home) and v['sameAsRepo'] is True, v
 # override 를 주지 않으면 args 에도 manifest 에도 없다 — 평소 측정은 에이전트 정의의 모델 그대로다.
 assert m['overrides'] is None and all(f['overrides'] is None for f in m['fixtures'].values())
 assert not any({'laneModel', 'laneEffort'} & set(json.load(open(f['args']))) for f in m['fixtures'].values())
@@ -3703,6 +3707,14 @@ v = m['agentSources']['vault-linter']
 assert v['source'] == os.path.realpath(os.path.join(fa, 'vault-linter.md')) and v['sameAsRepo'] is False, v
 assert m['agents']['vault-linter'] == hashlib.sha1(open(os.path.join(fa, 'vault-linter.md'), 'rb').read()).hexdigest()
 PY
+
+# 복사 설치 — flip.sh 의 실경로가 설치 루트 안이면 독립 체크아웃이 없다. 대조했다고 쓰지 않고(None) 경고한다.
+CI="$T/flip-copy"; mkdir -p "$CI/skills"; cp -RL "$HOME/.claude/skills/preflight" "$CI/skills/preflight"; cp -RL "$HOME/.claude/agents" "$CI/agents"
+PF_AGENTS_DIR="$CI/agents" bash "$CI/skills/preflight/eval/flip.sh" prepare "$T/flip-copy-out" vault-status-enum > "$T/flip-copy.out" 2>&1; _frc=$?
+python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); v=m["agentSources"]["vault-linter"]; sys.exit(0 if v["sameAsRepo"] is None and v["engineRepo"] is None else 1)' \
+    "$T/flip-copy-out/manifest.json" 2>"$T/py.err" && [ "$_frc" -eq 0 ] && grep -q '레포 정의와 대조하지 못했다' "$T/flip-copy.out" \
+  && ok "복사 설치에서는 설치본을 설치본과 대조하지 않는다 — sameAsRepo=None 과 경고" \
+  || ng "복사 설치에서 빈 대조로 일치를 주장한다 [rc=$_frc]$(_diag "$T/py.err")" "sameAsRepo=None · 경고"
 
 # 워크플로 쪽 — 블록을 떼어 스텁으로 돌린다
 _PJO="$HOME/.claude/skills/preflight/preflight.js"

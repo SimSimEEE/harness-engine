@@ -111,6 +111,9 @@ catch-all `match` 는 "겹침은 풀지 않는다" 와 충돌하므로 선언의
 - **무엇**: `eval/flip.sh` 의 manifest 다이제스트(`agents`)를 이 레포의 `agents/<lane>.md` 가 아니라 워크플로가 해석하는
   설치본(`~/.claude/agents/<lane>.md` 의 실경로, `PF_AGENTS_DIR` 로 바꾼다)에서 뜬다. `agentSources` 에 실경로와 레포 정의와의
   일치 여부(`sameAsRepo`)를 남기고, 다르면 prepare·score 가 경고한다. 재측정(③)의 `claim-remeasurer` 다이제스트도 같다.
+  대조할 레포는 `flip.sh` 파일의 실경로가 놓인 체크아웃이다(`PF_ENGINE_REPO` 로 준다) — 스크립트 디렉터리 기준이면 파일 단위
+  링크·복사 설치에서 설치 루트가 되어 설치본을 설치본과 비교한다. 체크아웃이 설치 루트와 같으면(복사 설치) `sameAsRepo` 는
+  `null` 이고 경고한다 — 대조하지 않은 것을 일치로 적지 않는다.
 - **왜**: 워크플로는 `agentType` 을 세션의 에이전트 등록에서 해석한다. 오버레이가 같은 이름의 정의를 덮은 설치본에서
   레포를 해시하면, manifest 는 돌지 않은 정의를 "잰 정의" 로 적는다 — 위 하향 측정이 그렇게 대상을 잘못 기록했다.
 
