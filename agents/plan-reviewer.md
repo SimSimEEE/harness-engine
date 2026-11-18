@@ -2,6 +2,7 @@
 name: plan-reviewer
 description: change-planner 가 쓴 계획(claim 목록)을 구현 전에 심사한다. 형식이 아니라 의미를 본다 — claim 이 참·거짓을 가릴 수 있는가, 검증이 그 claim 을 실제로 닫는가, 빠진 불변식이 없는가. /plan 스킬이 부른다. 계획을 쓴 컨텍스트에서 돌리지 않는다.
 model: opus
+effort: high
 contract:
   writes: false
   network: none

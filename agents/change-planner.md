@@ -2,6 +2,7 @@
 name: change-planner
 description: 요청(Intent)을 요구사항·제약·불변식·위험·수용기준·검증계획으로 구조화한다. 코드를 쓰기 전에 PROACTIVELY 실행한다. 계획을 세우는 것이 아니라 무엇이 참이어야 하는지를 명시하는 역할이다.
 model: opus
+effort: high
 contract:
   writes: true        # 호출자가 준 초안 경로의 계획 JSON 만
   network: none
