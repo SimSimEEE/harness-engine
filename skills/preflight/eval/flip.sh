@@ -92,7 +92,9 @@ OUT="$out" PF="$PF" CMD="$cmd" python3 - "$@" <<'PY'
 import hashlib, json, os, subprocess, sys, collections, time
 OUT, PF, CMD = (os.environ[k] for k in ('OUT', 'PF', 'CMD'))
 REPO = os.path.dirname(os.path.dirname(PF))
-AGENT = os.path.join(REPO, 'agents', 'claim-remeasurer.md')
+# lane 측정과 같다 — 워크플로가 해석하는 것은 설치본 정의다(PF_AGENTS_DIR 로 바꾼다)
+AGENT = os.path.realpath(os.path.join(os.path.expanduser(os.environ.get('PF_AGENTS_DIR') or '~/.claude/agents'),
+                                      'claim-remeasurer.md'))
 def sha(p):
     try: return hashlib.sha1(open(p, 'rb').read()).hexdigest()
     except OSError: return None
@@ -209,8 +211,27 @@ def sha(p):
     try: return hashlib.sha1(open(p, 'rb').read()).hexdigest()
     except OSError: return None
 
+# 워크플로는 agentType 을 세션의 에이전트 등록에서 해석한다 — 설치본(~/.claude/agents)이다. 이 레포의
+# agents/ 가 아니다. 오버레이가 같은 이름의 정의를 덮으면 측정되는 것은 오버레이 정의다. 그래서 다이제스트는
+# 설치본에서 뜨고, 그 실경로와 레포 정의와의 일치 여부를 함께 남긴다. PF_AGENTS_DIR 로 자리를 바꾼다.
+AGENTS_DIR = os.path.expanduser(os.environ.get('PF_AGENTS_DIR') or '~/.claude/agents')
+def agent_source(l):
+    p = os.path.join(AGENTS_DIR, f'{l}.md')
+    return os.path.realpath(p) if os.path.exists(p) else None
 def agent_digests(lanes):
-    return {l: sha(os.path.join(REPO, 'agents', f'{l}.md')) for l in sorted(lanes)}
+    return {l: sha(agent_source(l)) if agent_source(l) else None for l in sorted(lanes)}
+def agent_provenance(lanes):
+    out = {}
+    for l in sorted(lanes):
+        src = agent_source(l)
+        out[l] = {'source': src, 'sameAsRepo': bool(src) and sha(src) == sha(os.path.join(REPO, 'agents', f'{l}.md'))}
+    return out
+def warn_provenance(prov):
+    for l, v in prov.items():
+        if not v['source']:
+            print(f'⚠ {l}: 설치본에 정의가 없다({AGENTS_DIR}) — 워크플로가 이 lane 을 해석하지 못하거나 다른 곳의 정의를 쓴다')
+        elif not v['sameAsRepo']:
+            print(f'⚠ {l}: 측정되는 정의는 설치본 {v["source"]} 이다 — 이 레포의 agents/{l}.md 와 내용이 다르다')
 
 MODELS = ('haiku', 'sonnet', 'opus')
 EFFORTS = ('low', 'medium', 'high', 'xhigh', 'max')
@@ -260,13 +281,15 @@ if CMD == 'prepare':
     dirty = bool(subprocess.run(['git', '-C', REPO, 'status', '--porcelain', '--', 'agents', 'skills/preflight'],
                                 capture_output=True, text=True).stdout.strip())
     man = {'created': time.strftime('%Y-%m-%dT%H:%M:%S%z'), 'harness': head, 'harnessDirty': dirty,
-           'agents': agent_digests(lanes_all), 'conventionDocs': {d: sha(d) for d in sorted(docs)},
+           'agents': agent_digests(lanes_all), 'agentSources': agent_provenance(lanes_all),
+           'conventionDocs': {d: sha(d) for d in sorted(docs)},
            'workflow': os.path.join(PF, 'preflight.js'), 'overrides': {f: m for f, m in ovr.items() if m} or None,
            'fixtures': fixtures}
     json.dump(man, open(os.path.join(OUT, 'manifest.json'), 'w'), ensure_ascii=False, indent=1)
     print(f'준비됨: {OUT}' + (f'  (측정 전용 override {json.dumps(man["overrides"])})' if man['overrides'] else ''))
     for n, f in fixtures.items():
         print(f'  {n:<22} 기대 {json.dumps(f["expect"])}  args: {f["args"]}')
+    warn_provenance(man['agentSources'])
     print(f'각 args.json 을 {man["workflow"]} 의 args 로 k 번 돌리고 결과를 score 에 넘겨라 (영수증은 남기지 마라). 실행마다 서로 다른 runId 를 args 에 더해라.')
     sys.exit(0)
 
@@ -352,7 +375,7 @@ for n, fx in man['fixtures'].items():
 now = agent_digests({r['lane'] for r in rows})
 drift = {l: (man['agents'].get(l), d) for l, d in now.items() if man['agents'].get(l) != d}
 res = {'harness': man['harness'], 'harnessDirty': man['harnessDirty'], 'agents': man['agents'],
-       'overrides': man.get('overrides'),
+       'agentSources': man.get('agentSources'), 'overrides': man.get('overrides'),
        'agentsChangedSincePrepare': sorted(drift), 'minAgree': min_agree, 'rows': rows,
        'failed': failed, 'verdict': 'FAIL' if failed else 'PASS'}
 if as_json:
@@ -368,6 +391,8 @@ else:
               + (f' · 참고 {r["runsWithNotes"]}회/{r["distinctNotes"]}종' if r['runsWithNotes'] else ''))
     if drift:
         print(f'⚠ prepare 이후 에이전트 정의가 바뀌었다: {sorted(drift)} — 어느 정의를 잰 것인지 섞였을 수 있다')
+    if man.get('agentSources'):
+        warn_provenance(man['agentSources'])
     print(f'판정 {res["verdict"]} (일치율 기준 {min_agree:g})' + (f' — 미달: {", ".join(failed)}' if failed else ''))
 sys.exit(1 if failed else 0)
 PY
