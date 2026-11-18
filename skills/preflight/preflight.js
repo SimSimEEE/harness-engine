@@ -207,7 +207,9 @@ const EFFORT = { 'vault-linter': 'low', 'pr-quality': 'low' };
 // 같은 입력을 5번 돌리면 판정은 같은데 id 는 최빈값이 2~3회뿐이었다 — 직전 라운드 id 와 맞춰
 // 재발을 세는 집계가 성립하지 않는다. lane 은 닫힌 어휘에서 rule 을 고르고 결함이 있는 심볼을
 // 적는다. id 는 코드가 rule·파일·심볼로 만든다(findingId). 어휘가 없는 lane 은 종전대로 lane 의 id 를 쓴다.
+// vault-linter·test-runner 는 haiku 로 내린 뒤 최빈 id 점유가 2/5·1/5 였다(DECISIONS) — 그래서 어휘를 둔다.
 // 어휘의 정본은 여기와 검사기(pr-format-check.sh --rules)다 — lane 정의에 옮겨 적지 마라.
+// BEGIN finding-rules — meta-test 가 이 구간을 `const laneMeta = {}` 뒤에 붙여 실행한다. laneMeta 밖의 바깥 이름을 참조하지 마라.
 // CONTRACT: finding-rules-one-place
 const RULES = {
     'code-reviewer': {
@@ -229,12 +231,43 @@ const RULES = {
         'gate-exposure': '본문·제목이 이 머신 전용 게이트(lane 이름·게이트 통과·영수증 등)를 드러낸다',
         'other': '위 어디에도 맞지 않는다',
     } : null,
+    // vault 규칙의 구체 값(enum·형식·한도)은 vault 마다 다르다 — 어휘는 위반의 **종류**만 가른다.
+    // file 은 위반이 있는 문서다(append-only 위반이면 수정·삭제된 그 파일).
+    'vault-linter': {
+        'frontmatter-enum': 'frontmatter 의 enum 키(type·status 등) 값이 규칙이 정한 집합 밖이다',
+        'frontmatter-format': 'frontmatter 값의 형식(날짜·목록형 키의 wikilink 배열/문자열/URL)이 규칙과 다르다',
+        'frontmatter-missing-key': '템플릿이 요구하는 frontmatter 키가 빠졌다',
+        'wikilink-target-missing': 'wikilink 대상 문서가 없다',
+        'wikilink-form': 'wikilink 문법이 규칙과 다르거나, 링크하면 안 되는 대상(원본 보관 영역 등)을 링크했다',
+        'language': '본문·헤딩·키의 언어 규약을 어겼다',
+        'filename': '파일명이 형식·금지 문자·길이 한도·NFC 정규화 규칙을 어겼다',
+        'absolute-path': '머신 절대경로(사용자 홈 아래 경로)가 들었다',
+        'size-limit': '크기·항목 수 한도를 넘었거나 실행마다 서술이 누적된다',
+        'append-only': 'append-only 영역의 파일이 수정·삭제·rename 됐다',
+        'personal-data': '개인 데이터(per-item 레이블·개인 파일 경로·로컬 샘플 폴더명·실명·연락처)가 들었다',
+        'gate-vocabulary': '개인 프리플라이트 게이트 어휘(게이트 통과·라운드·영수증·lane 이름 등)가 들었다',
+        'other': '위 어디에도 맞지 않는다',
+    },
+    // 원인 추정이 아니라 **어떤 검사가 새로 깨졌는가** 로 고른다. 깨진 소스 함수가 무엇인지는 summary 에 적는다.
+    'test-runner': {
+        'new-test-failure': '기준선에서 통과하던 테스트가 새로 실패하거나(회귀 명령으로 받은 테스트 러너 실행 포함) 테스트 파일이 새로 로드·컴파일되지 않는다. file 은 실패한 **테스트 파일**이다 — 같은 파일의 테스트 여럿이 깨져도 지적 하나다',
+        'type-error': 'tsc 가 새 타입 오류를 낸다. file 은 오류가 난 소스 파일',
+        'lint-error': '변경 파일에 eslint error 가 있다. file 은 그 파일',
+        'convention-check': '카테고리 관례 검사기가 변경 파일을 지적했다. file 은 그 파일',
+        'regression-suite': '분류기가 준 회귀 명령 중 **테스트 러너가 아닌** 스크립트(계약 검사·meta-test 등)가 실패했다. 회귀 명령이 테스트 러너(jest·node --test 등)면 new-test-failure 다. file 은 그 스크립트의 레포 상대경로',
+        'preexisting-failure': '기준선에서도 실패하던 것이다 (blocking=false)',
+        'not-verified': '검사를 하지 못했다 — 체크아웃·기준선 없음, 변이 하네스 실행 불가, 검사한 설치본이 레포와 다름 등',
+        'other': '위 어디에도 맞지 않는다',
+    },
 };
 const rulesFor = lane => RULES[lane] ?? null;
 const SYMBOL_HINT = {
     'code-reviewer': '결함이 있는 함수·메서드 이름만 (클래스·괄호·인자 없이, 예: retryRefund). 파일 전체에 걸리면 비워라',
     'pr-quality': '커밋 지적이면 커밋 sha 앞 7자, 그 밖(브랜치·제목·본문)은 비워라',
+    'vault-linter': 'frontmatter 지적이면 그 키 이름(예: status), wikilink 지적이면 링크 대상 slug, 그 밖은 비워라',
+    'test-runner': 'type-error 면 TS 오류 코드(예: TS2322), lint-error·convention-check 면 검사기의 rule 이름, 그 밖은 비워라 (테스트 이름·줄 번호를 넣지 마라)',
 };
+// END finding-rules
 
 // BEGIN finding-id — meta-test 가 이 구간만 떼어 실행한다. 바깥 이름을 참조하지 마라.
 // CONTRACT: finding-id-is-one-function
@@ -252,6 +285,29 @@ function findingId(f, ctx) {
     return `${f.rule}${file ? `@${file}` : ''}${sym ? `#${sym}` : ''}`;
 }
 // END finding-id
+
+// BEGIN finding-fold — meta-test 가 이 구간만 떼어 실행한다. 바깥 이름을 참조하지 마라.
+// 계산된 id 가 같으면 같은 결함이다 — 한 lane 이 같은 id 를 여럿 내면 하나로 접는다.
+// 접지 않으면 같은 결함(예: 한 테스트 파일에서 테스트 2개가 깨짐)이 실행마다 1건·2건으로 세진다.
+// 기준은 첫 항목: blocking 은 OR, summary·fix 는 서로 다른 것만 ' / ' 로 잇고, label·line 은 첫 것을 남긴다.
+// rule 이 없는 항목(id 를 계산하지 않은 것)은 접지 않는다. 어휘가 없는 lane 에는 부르지 않는다.
+// CONTRACT: finding-id-dedup-per-lane
+function foldFindings(fs) {
+    const out = [], byId = new Map();
+    for (const f of fs) {
+        const hit = f.rule ? byId.get(f.id) : undefined;
+        if (!hit) {
+            const g = { ...f };
+            out.push(g);
+            if (f.rule) byId.set(f.id, { g, seen: { summary: [f.summary].filter(Boolean), fix: [f.fix].filter(Boolean) } });
+            continue;
+        }
+        hit.g.blocking = Boolean(hit.g.blocking || f.blocking);
+        for (const k of ['summary', 'fix']) { const s = hit.seen[k]; if (f[k] && !s.includes(f[k])) s.push(f[k]); if (s.length) hit.g[k] = s.join(' / '); }
+    }
+    return out;
+}
+// END finding-fold
 
 // baseline 전용 스키마. lane 을 enum 으로 묶어 **검증기가 거절**하게 한다.
 // 프롬프트로 부탁만 하면 지켜지는지 아무도 확인하지 않고, baseline 이 lane 에 "test-runner" 를
@@ -1288,9 +1344,11 @@ for (const [lane, r] of pairs) {
         continue;
     }
     // 어휘가 있는 lane 은 id 를 계산값으로 바꾼다. lane 이 지은 이름은 label 로 남긴다.
-    const fs = (r.findings ?? []).map(f => rulesFor(lane) && f.rule
+    // 같은 lane 안에서 계산 id 가 같은 지적은 하나로 접는다(foldFindings). 어휘 없는 lane 은 그대로 둔다.
+    const mapped = (r.findings ?? []).map(f => rulesFor(lane) && f.rule
         ? { ...f, lane, label: f.id, id: findingId(f, { repo, prBodyFile }) }
         : { ...f, lane });
+    const fs = rulesFor(lane) ? foldFindings(mapped) : mapped;
     const blk = fs.filter(f => f.blocking);
     blocking.push(...blk);
     warnings.push(...fs.filter(f => !f.blocking && r.verdict === 'WARNING'));

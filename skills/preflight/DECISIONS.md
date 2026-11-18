@@ -58,6 +58,30 @@ catch-all `match` 는 "겹침은 풀지 않는다" 와 충돌하므로 선언의
   (`code-reviewer`·`qa-reviewer` 는 워크플로 호출에서 effort 를 넘기지 않으므로 frontmatter 값이 쓰인다).
   `ENGINE_VERSION` 은 올리지 않는다 — 프로필 스키마와 무관하다.
 
+### `vault-linter`·`test-runner` 에 지적 어휘를 뒀다 — id 를 하네스가 계산하고, 같은 id 는 접는다
+
+- **무엇**: `preflight.js` 의 `RULES` 에 두 lane 의 닫힌 어휘를, `SYMBOL_HINT` 에 심볼 안내를 더했다. vault-linter 는
+  위반의 **종류**(frontmatter 값·형식·누락 키, wikilink 대상·형식, 언어, 파일명, 절대경로, 크기, append-only, 개인 데이터,
+  게이트 어휘)로, test-runner 는 **어떤 검사가 새로 깨졌는가**(테스트·타입·린트·관례 검사기·회귀 명령·기준선 실패·미검증)로
+  가른다. 둘 다 `other` 를 둔다. 이제 두 lane 의 finding id 도 `findingId()`(`rule@파일#심볼`)가 계산하고, lane 이 지은
+  이름은 `label` 로 남는다. 스키마·게이트 프롬프트·`priorBlock`·집계의 id 치환은 어휘가 있는 lane 에 이미 적용되던 배관
+  그대로다. 두 에이전트 정의의 id 불릿은 `code-reviewer` 와 같은 취지(어휘에서 rule 을 고르고 symbol 을 적는다, id 는
+  하네스가 계산한다, 어휘는 워크플로가 정본)로 바꿨고 어휘 항목은 옮겨 적지 않았다.
+- **같은 id 접기**(`foldFindings`, CONTRACT `finding-id-dedup-per-lane`): 집계가 어휘가 있는 lane 의 지적을 계산 id 로 묶어
+  같은 id 를 하나로 합친다 — 첫 항목 기준, `blocking` 은 OR, `summary` 는 서로 다른 것만 ` / ` 로 잇고, `label` 은 첫 것.
+  rule 이 없는 지적과 어휘가 없는 lane 은 접지 않는다.
+- **왜**: haiku 로 내린 뒤 막은 실행 5회 중 최빈 id 집합 점유가 vault 2/5·test 1/5 였다(아래 절). lane 이 id 를 지으면
+  라운드 사이 재발 집계(`recurrence`)가 같은 결함을 해소+새로 로 갈라 센다 — 그 절이 "모델을 되돌리기보다 어휘를 두는
+  것이 순서" 라고 적은 대로 했다. 접기는 id 가 같다는 것이 곧 같은 결함이라는 정의에서 나온다: 한 테스트 파일에서 테스트
+  2개가 깨지면 `new-test-failure@<그 파일>` 이 두 번 나오고, 접지 않으면 blocking 목록 건수가 실행마다 1·2 로 흔들린다.
+- **치른 값**: test-runner 의 `new-test-failure` 는 **테스트 파일 단위**다(심볼을 비우게 했다 — 테스트 이름은 실행마다
+  표기가 갈린다). 한 파일 안의 서로 다른 실패는 지적 하나로 합쳐지고, 구분은 이어 붙인 `summary` 에만 남는다. 그래서 한
+  파일에서 실패 하나를 고치고 다른 하나가 남으면 재발 집계는 "같은 결함이 그대로" 로 센다. vault-linter 도 심볼을 비우는
+  rule(언어·파일명·크기 등)은 같은 문서의 같은 종류 위반이 하나로 합쳐진다.
+- **측정**(2026-11-18, haiku k=5, 결함 입력 2개, lane 정의는 이 머신의 오버레이 설치본): 최빈 id 집합 점유가 vault 2/5 → **5/5**(`frontmatter-enum@notes/release-checklist.md#status`), test 1/5 → **4/5**(`new-test-failure@test/slugify.test.js`), 판정 일치는 둘 다 5/5 그대로. test 의 1회는 같은 결함을 `regression-suite` 로 골랐다 — 이 입력의 회귀 명령이 `node --test` 자체라 두 rule 설명이 겹쳤다. 측정 뒤 `regression-suite` 를 "테스트 러너가 아닌 회귀 스크립트" 로 좁히고 `new-test-failure` 에 "회귀 명령으로 받은 테스트 러너 실행 포함" 을 더했다 — 이 수정은 다시 재지 않았다.
+- **한계**: 어휘 선택이 실행마다 안정한지(같은 결함에 같은 rule 을 고르는지)는 이 변경으로 보장되지 않는다 — 경계가
+  애매한 위반(예: frontmatter 형식과 enum 사이)은 rule 이 갈리면 id 도 갈린다.
+
 ### `vault-linter`·`test-runner` 를 sonnet 에서 haiku 로 내렸다
 
 - **무엇**: 두 에이전트 frontmatter 의 `model: sonnet` → `model: haiku`. 다른 값(effort·contract)은 그대로다.
