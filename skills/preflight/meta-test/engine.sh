@@ -4277,6 +4277,63 @@ process.exit(new Set(ids).size === 1 && ids[0] === 'contract@src/a.ts#f' ? 0 : 1
 JS
 node "$T/fid2.js" 2>"$T/py.err" && ok "원본·스냅숏 두 개·상대경로로 보고한 같은 결함의 id 가 같다" || ng "스냅숏 경로가 findingId 를 갈랐다$(_diag "$T/py.err")" "contract@src/a.ts#f"
 
+# vault-linter·test-runner 어휘 — 두 lane 도 id 를 하네스가 계산한다(DECISIONS 「vault-linter·test-runner 에 지적 어휘를 뒀다」).
+{ echo 'const laneMeta = {};'; sed -n '/BEGIN finding-rules/,/END finding-rules/p' "$_PJS"; } > "$T/frules.js"
+cat >> "$T/frules.js" <<'JS'
+const L = ['vault-linter', 'test-runner'];
+const ok = L.every(l => RULES[l] && Object.prototype.hasOwnProperty.call(RULES[l], 'other') && Object.keys(RULES[l]).length > 1
+  && typeof SYMBOL_HINT[l] === 'string' && rulesFor(l) === RULES[l]);
+if (ok) for (const l of L) console.log(l + ' ' + Object.keys(RULES[l]).filter(k => k !== 'other').join(' '));
+process.exit(ok ? 0 : 1);
+JS
+node "$T/frules.js" > "$T/frules.out" 2>"$T/py.err" \
+  && ok "RULES·SYMBOL_HINT 에 vault-linter·test-runner 어휘가 있고 각자 other 를 포함한다" || ng "두 lane 의 어휘가 RULES·SYMBOL_HINT 에 없다$(_diag "$T/py.err")" "두 키 · other · SYMBOL_HINT"
+# 어휘의 정본은 워크플로다 — 에이전트 정의에 rule 이름이 옮겨 적히면 두 벌이 된다.
+# 인용 형태(`x`·'x'·"x")는 모든 이름이 0건이어야 한다. append-only 는 VAULT_RULES 의 영역 이름이라 맨말은 원래 있다 —
+# 그 하나만 맨말 검사에서 뺀다.
+_vc=0; _vh=""
+[ -s "$T/frules.out" ] || { _vc=1; _vh=" 어휘 목록을 못 읽었다"; }
+while read -r _ln _names; do
+  for _ag in vault-linter test-runner; do
+    for _rn in $_names; do
+      _c=$(grep -cE "[\`'\"]${_rn}[\`'\"]" "$HOME/.claude/agents/$_ag.md" 2>/dev/null); _c=${_c:-0}
+      [ "$_rn" != append-only ] && _c=$(( _c + $(grep -cF -- "$_rn" "$HOME/.claude/agents/$_ag.md" 2>/dev/null || true) ))
+      [ "$_c" != 0 ] && { _vc=$(( _vc + _c )); _vh="$_vh $_ag:$_rn"; }
+    done
+  done
+done < "$T/frules.out"
+[ "$_vc" = 0 ] && ok "vault-linter·test-runner 정의에 두 lane 의 rule 이름이 0건이다 (어휘는 워크플로가 정본)" || ng "에이전트 정의에 어휘가 옮겨 적혔다 ($_vc:$_vh)" "0"
+grep -qF '`id` 는 하네스가 `rule@파일#심볼` 로 계산한다' "$HOME/.claude/agents/vault-linter.md" \
+  && grep -qF '`id` 는 하네스가 `rule@파일#심볼` 로 계산한다' "$HOME/.claude/agents/test-runner.md" \
+  && ok "두 lane 정의가 id 는 하네스가 계산한다고 말한다" || ng "lane 정의가 아직 lane 이 id 를 짓는다고 말한다" "rule@파일#심볼"
+
+# 같은 lane 안에서 계산 id 가 같은 지적은 하나로 접는다 — 같은 id 는 같은 결함이다.
+{ sed -n '/BEGIN finding-id/,/END finding-id/p' "$_PJS"; sed -n '/BEGIN finding-fold/,/END finding-fold/p' "$_PJS"; } > "$T/ffold.js"
+cat >> "$T/ffold.js" <<'JS'
+const c = { repo: '/r/x' };
+const raw = [
+  { id: 'a1', rule: 'new-test-failure', file: 'test/x.test.js', blocking: false, summary: 'slug 테스트 실패' },
+  { id: 'a2', rule: 'new-test-failure', file: '/r/x/test/x.test.js', blocking: true, summary: 'trim 테스트 실패' },
+  { id: 'b',  rule: 'type-error', file: 'src/a.ts', symbol: 'TS2322', blocking: true, summary: '타입' },
+  { id: 'a3', rule: 'new-test-failure', file: 'test/x.test.js', blocking: false, summary: 'slug 테스트 실패' },
+  { id: 'free', blocking: false, summary: 'rule 없음 1' },
+  { id: 'free', blocking: false, summary: 'rule 없음 2' },
+];
+const fs = foldFindings(raw.map(f => f.rule ? { ...f, label: f.id, id: findingId(f, c) } : { ...f }));
+const t = fs.filter(f => f.id === 'new-test-failure@test/x.test.js');
+const ok = fs.length === 4 && t.length === 1 && t[0].blocking === true && t[0].label === 'a1'
+  && t[0].summary === 'slug 테스트 실패 / trim 테스트 실패'
+  && fs.some(f => f.id === 'type-error@src/a.ts#ts2322' && f.blocking)
+  && fs.filter(f => f.id === 'free').length === 2
+  && raw[0].blocking === false;
+process.exit(ok ? 0 : 1);
+JS
+node "$T/ffold.js" 2>"$T/py.err" && ok "같은 계산 id 는 하나로 접힌다 (blocking OR · 다른 summary 만 이음 · 첫 label) · 다른 id 와 rule 없는 지적은 그대로" \
+  || ng "같은 id 접기가 틀렸다$(_diag "$T/py.err")" "4건 · new-test-failure 1건 blocking · summary 둘"
+# 대조군: 어휘 없는 lane 은 접기를 거치지 않는다 — 집계는 rulesFor(lane) 일 때만 foldFindings 를 부른다.
+grep -qF 'const fs = rulesFor(lane) ? foldFindings(mapped) : mapped;' "$_PJS" \
+  && ok "대조군: 집계는 어휘가 있는 lane 에만 접기를 적용한다" || ng "집계가 어휘 없는 lane 도 접거나 접기를 부르지 않는다" "rulesFor(lane) ? foldFindings(mapped) : mapped"
+
 # R20 — 원본 경로 읽기를 결정론으로 세어 로그에만 남긴다(판정 불개입).
 IX="$T/sn20"; ixrepo "$IX"; printf 'a\n' > "$IX/a.txt"; git -C "$IX" add -A; git -C "$IX" "$G" -qm init
 printf 'b\n' > "$IX/a.txt"; git -C "$IX" add -A; ixcl "$IX" commit >/dev/null; _top=$(git -C "$IX" rev-parse --show-toplevel)
