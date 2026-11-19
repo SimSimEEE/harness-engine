@@ -277,7 +277,10 @@ a=70 a_sessions=13 b=62 main=202 home=45 norepo=78 path_outside_repo=9
   하나라도 빠지면 SCAN_ERROR 다(파서 누락이 CLEAN 이 되지 않게). 바이너리(`-\t-`)는 내용을 못 보므로 이름과 무관하게 민감
   경로로 보고, 키 저장소 확장자(`*.p12`·`*.pfx`·`*.jks`·`*.keystore`·`id_rsa*`·`id_ed25519*`)를 민감 경로에 더했다. 따옴표 없는 비밀번호
   할당(YAML·properties·env)과 접속 URL 에 박힌 자격증명은 suspect 패턴으로 LLM 에 넘긴다 — 플레이스홀더는 정규식에서 거르지
-  않고 판정에 맡긴다(오탐은 비용, 미탐은 사고). 패턴 정본은 v3 이다.
+  않고 판정에 맡긴다(오탐은 비용, 미탐은 사고). 패턴 정본은 v4 이다.
+- **후속 수정(호환, 엔진 버전 그대로)**:
+  - 키 이름이 따옴표로 닫힌 뒤 `:`·`=`·`=>` 가 오는 형태(JSON·dict·해시)를 suspect `secret-like-quoted-key` 로 잡고, `secret-like-assign` 에 `=>` 와 세션·접근 토큰/키·비밀번호 계열 어휘를 더했다 — 따옴표 키에 따옴표 없는 값(숫자·불리언·변수 참조)은 일부러 안 잡는다.
+  - 기록 단계 재스캔의 거부 사유를 가른다: PR 모드에서 status 가 갈리고 분류 artifact 의 `base.mergeBase` 가 지금 merge-base 와 다르면 `secret-scan-base-moved`(분류 이후 base 브랜치가 움직임), 아니면 `secret-scan-mismatch` — 둘 다 거부다.
   프롬프트의 역할은 auto 카테고리의 HITS·SENSITIVE_PATH 에서만 "걸린 것 판정" 으로 좁히고, always·SCAN_ERROR 는 전수 검사다.
 - **기본값은 현행 유지(opt-in)**: 상수가 없거나 `'always'` 면 지금처럼 늘 선택하고, 스캔 결과는 기록만 한다. 엔진·오버레이의
   배포 순서와 무관하게 오버레이 카테고리는 바뀌지 않는다. 이 엔진에서는 `shell-tool` 만 `'auto'` 다. `all` 모드는
