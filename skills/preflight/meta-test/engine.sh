@@ -865,9 +865,9 @@ fi
 
 if ! CMO=$(_cls commit); then
   ng "classify.sh commit 이 죽었다$(_clserr commit)" "정상 종료"
-elif _p=$(echo "$CMO" | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if "secret-scanner" not in d["laneMeta"] else 1)' 2>&1)
-then ok "커밋 모드는 종전 동작을 유지한다"
-else ng "커밋 모드까지 바꿨거나 프로브가 죽었다: ${_p:-(출력 없음)}" "laneMeta 에 secret-scanner 없음"; fi
+elif _p=$(echo "$CMO" | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if "diffRange" not in (d["laneMeta"].get("secret-scanner") or {}) else 1)' 2>&1)
+then ok "커밋 모드는 종전 동작을 유지한다 (secret-scanner 에 diffRange 키 없음)"
+else ng "커밋 모드까지 바꿨거나 프로브가 죽었다: ${_p:-(출력 없음)}" "laneMeta.secret-scanner 에 diffRange 없음"; fi
 
 # all 모드는 base 를 해석하지 않으므로(classify.sh 의 base 해석이 pr 에만 걸린다) 범위를 주면 안 된다.
 # diffRange=None 을 주면 preflight.js 가 lane 에 '브랜치 전체 커밋을 보라'를 넣어,
@@ -5091,3 +5091,227 @@ grep -qF 'CONTRACT: claim-remeasure-is-advisory' "$_PJR" && grep -qF 'const REME
   && ok "상한 K(5)·T(7일)가 이름 붙은 상수이고 계약 주석이 있다" || ng "상한 상수·계약 주석이 없다" "REMEASURE_MAX_CLAIMS · STALE_AFTER_SEC"
 
 
+
+# BEGIN secret-scan-routing — 결정론 시크릿 스캔과 secret-scanner 라우팅(DECISIONS.md 2026-11-19 「시크릿 검사 결정론 우선」)
+echo "== 결정론 시크릿 스캔 · secret-scanner 라우팅 =="
+SSD="$T/ssroute"; rm -rf "$SSD"; mkdir -p "$SSD"
+SSX="$HOME/.claude/skills/preflight/secret-scan.sh"
+# 더미 값은 실제 형식과 같은 모양의 명백한 가짜다. 이 파일 자체가 스캔에 걸리지 않게 런타임에 조립한다.
+_ssjwt=$(python3 -c 'print("ey" + "J" + "x" * 24 + "." + "y" * 24 + "." + "z" * 24)')
+_ssakia=$(python3 -c 'print("AK" + "IA" + "Q" * 16)')
+# 기본 픽스처는 shell-tool 카테고리(SECRET_SCAN = 'auto') 레포다 — 스위트와 훅 파일을 스냅숏에 둔다.
+# 둘째 인자 plain 이면 신호 없는 레포(generic, SECRET_SCAN 없음 = always)다.
+ssrepo(){ ixrepo "$1"; printf 'base\n' > "$1/a.txt"
+  if [ "${2:-}" != plain ]; then mkdir -p "$1/skills/preflight" "$1/hooks"; : > "$1/skills/preflight/meta-test.sh"; : > "$1/hooks/preflight-gate.sh"; fi
+  git -C "$1" add -A; git -C "$1" "$G" -qm init; }
+ssj(){ python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print($2)" "$1" 2>"$T/py.err"; _pytb "$3"; }
+sscls(){ "$CL" "$1" "${2:-commit}" > "$1.cls.json" 2>"$T/ss-cl.err"; }
+ssrec(){ local d="$1" k="$2" lanes="$3" cj="${4:-}"; rm -f "$T/ss-rec.jsonl"
+  PF_LOG="$T/ss-rec.jsonl" "$R" record "$k" "$d" "$lanes" ${cj:+"@$cj"} > "$T/ss-rec.out" 2>&1; local rc=$?
+  python3 -c 'import json,sys; L=[json.loads(l) for l in open(sys.argv[1]) if l.strip()]; r=[e for e in L if e.get("event")=="record"]; print((r[-1].get("outcome"), r[-1].get("reason")) if r else ("none", None))' "$T/ss-rec.jsonl" 2>"$T/py.err"
+  return $rc; }
+
+# (a) auto(shell-tool) + 깨끗한 변경 → secret-scanner 미선택, 사유 secret-scan-clean
+ssrepo "$SSD/a"; printf 'more\n' >> "$SSD/a/a.txt"; git -C "$SSD/a" add -A; sscls "$SSD/a"
+[ "$(ssj "$SSD/a.cls.json" '"secret-scanner" in d["selected"], d["notSelected"].get("secret-scanner","").startswith("secret-scan-clean — "), d["secretScan"]["status"], d["secretScan"]["mode"], d["category"]' $LINENO)" = "False True CLEAN auto shell-tool" ] \
+  && ok "SS-a: auto + 깨끗한 변경 → secret-scanner 미선택, notSelected 사유 secret-scan-clean, 분류에 secretScan CLEAN" \
+  || ng "SS-a: 깨끗한 변경의 라우팅이 어긋난다$(_diag "$T/ss-cl.err")" "False True CLEAN auto shell-tool"
+# 깨끗한 auto 분류는 lane 없이 기록된다 — 재스캔도 CLEAN 이라 거부할 근거가 없다
+[ "$(ssrec "$SSD/a" commit '{}')" = "('recorded', None)" ] \
+  && ok "SS-a: 깨끗한 auto 분류는 lane 결과 없이 기록된다 (재스캔 CLEAN 일치)" || ng "SS-a: 깨끗한 분류의 기록이 거부된다 ($(cat "$T/ss-rec.out"))" "recorded"
+
+# generic(기본 카테고리)은 SECRET_SCAN 이 없다 — 미분류 레포는 깨끗해도 secret-scanner 를 고른다(always)
+ssrepo "$SSD/a0" plain; printf 'more\n' >> "$SSD/a0/a.txt"; git -C "$SSD/a0" add -A; sscls "$SSD/a0"
+[ "$(ssj "$SSD/a0.cls.json" 'd["category"], "secret-scanner" in d["selected"], d["secretScan"]["status"], d["secretScan"]["mode"]' $LINENO)" = "generic True CLEAN always" ] \
+  && ok "SS-a: generic(미분류 fallback) 레포는 깨끗한 변경에도 secret-scanner 를 고른다 (always)" \
+  || ng "SS-a: 미분류 레포에서 secret-scanner 가 빠졌다$(_diag "$T/ss-cl.err")" "generic True CLEAN always"
+
+# (b) auto + JWT·AKIA 모양 더미 → 선택, laneMeta 에 걸린 위치(값 없음)
+ssrepo "$SSD/b"; printf 'one\ntoken = %s\nkey %s\n' "$_ssjwt" "$_ssakia" > "$SSD/b/b.txt"; git -C "$SSD/b" add -A; sscls "$SSD/b"
+[ "$(ssj "$SSD/b.cls.json" '"secret-scanner" in d["selected"], d["secretScan"]["status"], sorted((h["file"], h["line"], h["pattern"], h["grade"]) for h in d["laneMeta"]["secret-scanner"]["scan"]["hits"])' $LINENO)" \
+   = "True HITS [('b.txt', 2, 'jwt', 'error'), ('b.txt', 3, 'aws-access-key', 'error')]" ] \
+  && ok "SS-b: auto + JWT·AKIA 모양 더미 → secret-scanner 선택, laneMeta.scan.hits 에 파일·줄·패턴·등급" \
+  || ng "SS-b: 걸린 위치가 lane 에 넘어가지 않는다 ($(ssj "$SSD/b.cls.json" 'd["secretScan"]' $LINENO))" "True HITS [b.txt:2 jwt, b.txt:3 aws-access-key]"
+# 정직한 기록: 재스캔이 같고 secret-scanner 가 PASS 면 기록된다
+[ "$(ssrec "$SSD/b" commit '{"secret-scanner":"PASS"}')" = "('recorded', None)" ] \
+  && ok "SS-b: 같은 대상 재스캔이 분류와 같고 secret-scanner 결과가 있으면 기록된다" || ng "SS-b: 정직한 기록이 거부된다 ($(cat "$T/ss-rec.out"))" "recorded"
+# lane 프롬프트에 걸린 위치·패턴 이름과 역할 문장이 실린다
+if [ -f "$T/stub-run.cjs" ]; then
+  node "$T/stub-run.cjs" "$HOME/.claude/skills/preflight/preflight.js" "$SSD/b.cls.json" dumpPrompts > "$T/ss-prompts.txt" 2>"$T/py.err"
+  grep -qF 'b.txt:2 — jwt · error' "$T/ss-prompts.txt" && grep -qF '결정론 시크릿 스캔 결과' "$T/ss-prompts.txt" \
+    && grep -qF '걸린 것의 판정과 민감 경로 파일의 내용 확인' "$T/ss-prompts.txt" \
+    && ok "SS-b: secret-scanner 프롬프트에 걸린 위치·패턴 이름과 판정 역할이 실린다" \
+    || ng "SS-b: 프롬프트에 스캔 결과가 없다$(_diag "$T/py.err")" "b.txt:2 — jwt · error"
+else
+  ng "SS-b: 가짜 런타임($T/stub-run.cjs)이 없어 프롬프트를 볼 수 없다" "stub-run.cjs"
+fi
+
+# (g) 값은 어디에도 나오지 않는다 — 분류 stdout·artifact·스캔 출력·프롬프트·관측 로그·영수증
+"$SSX" "$SSD/b" commit > "$T/ss-scan.out" 2>&1
+_ssleak=0; for _f in "$SSD/b.cls.json" "$(git -C "$SSD/b" rev-parse --absolute-git-dir)/claude-preflight.classify.json" \
+    "$T/ss-scan.out" "$T/ss-prompts.txt" "$T/ss-rec.jsonl" "$(git -C "$SSD/b" rev-parse --absolute-git-dir)/claude-preflight.json"; do
+  [ -s "$_f" ] || { _ssleak=$((_ssleak+100)); continue; }
+  _ssleak=$(( _ssleak + $(grep -cF -e "$_ssjwt" -e "$_ssakia" -e "${_ssjwt:0:12}" "$_f") )); done
+[ "$_ssleak" = 0 ] && ok "SS-g: 더미 값(앞 12자 포함)이 분류·스캔 출력·프롬프트·로그·영수증 어디에도 없다" \
+  || ng "SS-g: 시크릿 값이 출력에 샜다 (${_ssleak}; 100 단위는 파일 없음)" "0"
+# 결정론 — 같은 입력이면 같은 출력
+[ "$("$SSX" "$SSD/b" commit 2>&1)" = "$(cat "$T/ss-scan.out")" ] && ok "SS-g: 같은 입력 → 같은 스캔 출력" || ng "SS-g: 스캔이 실행마다 다르다" "같음"
+
+# (c) auto + env/x.yml → SENSITIVE_PATH 로 선택
+ssrepo "$SSD/c"; mkdir -p "$SSD/c/env" "$SSD/c/app/config/sub"; printf 'k: v\n' > "$SSD/c/env/x.yml"
+printf 'k: v\n' > "$SSD/c/app/config/sub/y.yaml"; printf 'A=1\n' > "$SSD/c/.env.example"; git -C "$SSD/c" add -A; sscls "$SSD/c"
+[ "$(ssj "$SSD/c.cls.json" '"secret-scanner" in d["selected"], d["secretScan"]["status"], d["laneMeta"]["secret-scanner"]["scan"]["sensitivePaths"]' $LINENO)" \
+   = "True SENSITIVE_PATH ['.env.example', 'app/config/sub/y.yaml', 'env/x.yml']" ] \
+  && ok "SS-c: auto + env/x.yml·config/**/*.yaml·.env.example → SENSITIVE_PATH 로 선택, 경로가 lane 에 넘어간다" \
+  || ng "SS-c: 민감 경로 라우팅이 어긋난다 ($(ssj "$SSD/c.cls.json" 'd["secretScan"]' $LINENO))" "True SENSITIVE_PATH [3개]"
+
+# (d) always — SECRET_SCAN 이 없는 카테고리(오버레이 픽스처)는 깨끗해도 선택. SECRET_SENSITIVE_EXTRA 는 스캔에 더해진다
+SSO="$SSD/overlay"; mkdir -p "$SSO/categories/ss-always"
+printf '{"categories": ["ss-always"]}\n' > "$SSO/categories/categories.json"
+printf '{"procedures": [{"id": "x", "text": "x"}]}\n' > "$SSO/categories/ss-always/procedures.json"
+cat > "$SSO/categories/ss-always/rules.py" <<'PYR'
+SECRET_SENSITIVE_EXTRA = ('*.cfgx',)
+
+
+def match(ctx):
+    return ['.ss-always'] if ctx.snap_has('.ss-always') else []
+PYR
+ssrepo "$SSD/d" plain; : > "$SSD/d/.ss-always"; git -C "$SSD/d" add -A; git -C "$SSD/d" "$G" -qm marker
+printf 'more\n' >> "$SSD/d/a.txt"; printf 'v\n' > "$SSD/d/app.cfgx"; git -C "$SSD/d" add -A
+PF_OVERLAY_DIR="$SSO" sscls "$SSD/d"
+[ "$(ssj "$SSD/d.cls.json" 'd["category"], "secret-scanner" in d["selected"], d["secretScan"]["mode"], d["secretScan"]["status"], d["secretScan"]["sensitivePaths"]' $LINENO)" \
+   = "ss-always True always SENSITIVE_PATH ['app.cfgx']" ] \
+  && ok "SS-d: SECRET_SCAN 없는 카테고리 → always, 카테고리의 SECRET_SENSITIVE_EXTRA 가 스캔에 더해진다" \
+  || ng "SS-d: always·추가 민감 경로가 어긋난다$(_diag "$T/ss-cl.err")" "ss-always True always SENSITIVE_PATH ['app.cfgx']"
+git -C "$SSD/d" rm -q --cached app.cfgx; rm -f "$SSD/d/app.cfgx"
+PF_OVERLAY_DIR="$SSO" sscls "$SSD/d"
+[ "$(ssj "$SSD/d.cls.json" '"secret-scanner" in d["selected"], d["secretScan"]["mode"], d["secretScan"]["status"], "secret-scanner" in d["notSelected"]' $LINENO)" = "True always CLEAN False" ] \
+  && ok "SS-d: always 카테고리는 스캔이 CLEAN 이어도 secret-scanner 를 고른다 (현행 유지)" \
+  || ng "SS-d: SECRET_SCAN 없는 카테고리의 동작이 바뀌었다$(_diag "$T/ss-cl.err")" "True always CLEAN False"
+# mode=all 은 auto 카테고리에서도 always 다
+"$CL" "$SSD/a" all > "$SSD/a.all.json" 2>"$T/ss-cl.err"
+[ "$(ssj "$SSD/a.all.json" '"secret-scanner" in d["selected"], d["secretScan"]["mode"]' $LINENO)" = "True always" ] \
+  && ok "SS-d: mode=all 은 auto 카테고리에서도 secret-scanner 를 고른다" || ng "SS-d: mode=all 이 secret-scanner 를 건너뛴다" "True always"
+
+# (e) 분류 뒤 secretScan 위조 → record 가 secret-scan-mismatch 로 거부
+ssforge(){ python3 - "$1" "$2" "$3" <<'PYF' 2>"$T/py.err"
+import json, sys
+src, dst, how = sys.argv[1:]
+d = json.load(open(src))
+if how in ('clean', 'clean-keep'):
+    d['secretScan']['status'] = 'CLEAN'; d['secretScan']['hits'] = []
+if how in ('clean', 'drop'):
+    d['selected'].pop('secret-scanner', None); d['laneMeta'].pop('secret-scanner', None)
+    d['notSelected']['secret-scanner'] = 'secret-scan-clean — 위조'
+if how == 'drop':
+    d.pop('secretScan', None)
+if how == 'old':
+    d.pop('secretScan', None)
+if how == 'version':
+    d['secretScan']['patternsVersion'] = '0'
+json.dump(d, open(dst, 'w'))
+PYF
+}
+_ssbg="$(git -C "$SSD/b" rev-parse --absolute-git-dir)/claude-preflight.classify.json"
+"$CL" "$SSD/b" commit > /dev/null 2>"$T/ss-cl.err"; cp "$_ssbg" "$SSD/b.honest.json"
+ssforge "$SSD/b.honest.json" "$SSD/b.f1.json" clean
+[ "$(ssrec "$SSD/b" commit '{}' "$SSD/b.f1.json")" = "('refused', 'secret-scan-mismatch')" ] \
+  && ok "SS-e: status 를 CLEAN 으로 바꾸고 selected 에서 뺀 분류 → record 가 재스캔해 secret-scan-mismatch 로 거부" \
+  || ng "SS-e: 위조한 분류로 secret-scanner 없이 기록됐다 ($(cat "$T/ss-rec.out"))" "refused secret-scan-mismatch"
+grep -qF 'secret-scan-mismatch' "$T/ss-rec.jsonl" && grep -q '"rescanned": *"HITS"' "$T/ss-rec.jsonl" \
+  && ok "SS-e: 거부가 관측 로그에 사유·재스캔 상태와 함께 남는다" || ng "SS-e: 거부가 로그에 없다" "reason=secret-scan-mismatch rescanned=HITS"
+ssforge "$SSD/b.honest.json" "$SSD/b.f2.json" clean-keep
+[ "$(ssrec "$SSD/b" commit '{"secret-scanner":{"status":"SKIPPED","reason":"x"}}' "$SSD/b.f2.json")" = "('refused', 'secret-scan-mismatch')" ] \
+  && ok "SS-e: status 만 CLEAN 으로 바꾸고 secret-scanner 를 SKIPPED 로 보고 → 거부" || ng "SS-e: SKIPPED 보고로 통과했다 ($(cat "$T/ss-rec.out"))" "refused secret-scan-mismatch"
+ssforge "$SSD/b.honest.json" "$SSD/b.f3.json" drop
+[ "$(ssrec "$SSD/b" commit '{}' "$SSD/b.f3.json")" = "('refused', 'secret-scan-mismatch')" ] \
+  && ok "SS-e: secretScan 을 지우고 secret-scanner 도 뺀 분류 → 거부 (옛 분류는 늘 그 lane 을 골랐다)" || ng "SS-e: secretScan 을 지워 검사를 껐다 ($(cat "$T/ss-rec.out"))" "refused secret-scan-mismatch"
+# 분류는 정직하고(상태 일치) secret-scanner 만 SKIPPED 로 보고 — 재스캔이 CLEAN 이 아니므로 거부(대조 (b) 단독)
+[ "$(ssrec "$SSD/b" commit '{"secret-scanner":{"status":"SKIPPED","reason":"x"}}' "$SSD/b.honest.json")" = "('refused', 'secret-scan-mismatch')" ] \
+  && ok "SS-e: 정직한 HITS 분류에서 secret-scanner 를 SKIPPED 로 보고 → 거부" || ng "SS-e: 걸린 변경을 SKIPPED 로 통과시켰다 ($(cat "$T/ss-rec.out"))" "refused secret-scan-mismatch"
+ssforge "$SSD/b.honest.json" "$SSD/b.f4.json" version
+[ "$(ssrec "$SSD/b" commit '{"secret-scanner":"PASS"}' "$SSD/b.f4.json")" = "('refused', 'secret-scan-mismatch')" ] \
+  && ok "SS-e: 분류의 patternsVersion 이 지금 패턴 파일과 다르면 거부" || ng "SS-e: 패턴 판이 갈린 분류가 기록됐다 ($(cat "$T/ss-rec.out"))" "refused secret-scan-mismatch"
+ssforge "$SSD/b.honest.json" "$SSD/b.f5.json" old
+[ "$(ssrec "$SSD/b" commit '{"secret-scanner":"PASS"}' "$SSD/b.f5.json")" = "('recorded', None)" ] \
+  && ok "SS-e: secretScan 이 없는 옛 분류(secret-scanner 선택됨)는 이 검사를 건너뛴다" || ng "SS-e: 옛 분류가 거부된다 ($(cat "$T/ss-rec.out"))" "recorded"
+
+# (f) 파일은 있는데 범위가 비면 SCAN_ERROR — 범위가 틀린 것이지 변경이 없는 것이 아니다
+printf 'a.txt\0' > "$T/ss-files"
+[ "$("$SSX" "$SSD/a" pr --from HEAD --files-from "$T/ss-files" 2>"$T/py.err" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["status"], d["scannedLines"], d["files"])' 2>>"$T/py.err")" = "SCAN_ERROR 0 1" ] \
+  && ok "SS-f: 파일 목록이 있는데 범위(HEAD..HEAD)가 비면 SCAN_ERROR" || ng "SS-f: 빈 범위를 CLEAN 으로 냈다$(_diag "$T/py.err")" "SCAN_ERROR 0 1"
+[ "$("$SSX" "$SSD/a" commit --files-from /nonexistent/pf-files 2>"$T/py.err" | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])' 2>>"$T/py.err")" = SCAN_ERROR ] \
+  && ok "SS-f: 스캔이 입력을 못 읽으면 SCAN_ERROR (도는 쪽)" || ng "SS-f: 읽기 실패가 SCAN_ERROR 가 아니다$(_diag "$T/py.err")" "SCAN_ERROR"
+# 줄 변경이 없는 변경(모드만 바뀜)은 범위가 맞아도 스캔한 줄이 0이다 — 결론을 내지 않고 SCAN_ERROR (LLM 이 본다)
+ssrepo "$SSD/m"; chmod +x "$SSD/m/a.txt"; git -C "$SSD/m" add -A
+[ "$("$SSX" "$SSD/m" commit 2>"$T/py.err" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["status"], d["scannedLines"], d["missedFiles"])' 2>>"$T/py.err")" = "SCAN_ERROR 0 []" ] \
+  && ok "SS-f: 파일은 있는데 추가·삭제 라인이 0(모드만 변경)이면 SCAN_ERROR" || ng "SS-f: 0줄 변경을 CLEAN 으로 냈다$(_diag "$T/py.err")" "SCAN_ERROR 0 []"
+# 삭제 라인 히트는 removed 등급으로 HITS 에 들어간다 (PR 모드)
+git -C "$SSD/b" "$G" -qm secret >/dev/null 2>&1; git -C "$SSD/b" rm -q b.txt; git -C "$SSD/b" "$G" -qm drop >/dev/null 2>&1
+[ "$("$SSX" "$SSD/b" pr --from HEAD~1 2>"$T/py.err" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["status"], sorted({(h["pattern"], h["grade"]) for h in d["hits"]}))' 2>>"$T/py.err")" \
+   = "HITS [('aws-access-key', 'removed'), ('jwt', 'removed')]" ] \
+  && ok "SS-f: PR 범위의 삭제 라인 히트는 grade=removed 로 HITS" || ng "SS-f: 삭제 라인 히트가 어긋난다$(_diag "$T/py.err")" "HITS removed×2"
+# (k) 따옴표 없는 비밀번호 할당·접속 URL 내장 자격증명 — YAML·properties·env·URL 각각 걸린다(suspect, 판정은 LLM)
+_sspw=$(python3 -c 'print("dum" + "myPw" + "4821")')
+_ssurl="$(printf my)sql:/""/admin:${_sspw}@db.example.com/x"
+ssrepo "$SSD/k"; mkdir -p "$SSD/k/app"
+printf 'POSTGRES_PASSWORD: %s\n' "$_sspw" > "$SSD/k/app/compose.txt"
+printf 'spring.datasource.password=%s\n' "$_sspw" > "$SSD/k/app/app.txt"
+printf 'DB_PASSWORD=%s\n' "$_sspw" > "$SSD/k/app/dot.txt"
+printf 'url = %s\n' "$_ssurl" > "$SSD/k/app/url.txt"
+git -C "$SSD/k" add -A
+_ssk=$("$SSX" "$SSD/k" commit 2>"$T/py.err" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(json.dumps({h["file"]: sorted(x["pattern"] for x in d["hits"] if x["file"] == h["file"]) for h in d["hits"]}, sort_keys=True), d["status"])' 2>>"$T/py.err")
+for _kk in 'compose.txt:password-assign-unquoted' 'app.txt:password-assign-unquoted' 'dot.txt:password-assign-unquoted' 'url.txt:url-embedded-credentials'; do
+  printf '%s' "$_ssk" | python3 -c 'import json,sys; f,p=sys.argv[1].split(":"); raw=sys.stdin.read(); d=json.loads(raw.rsplit(" ",1)[0]); sys.exit(0 if raw.endswith("HITS") and p in d.get("app/"+f, []) else 1)' "$_kk" 2>"$T/py.err" \
+    && ok "SS-k: ${_kk%%:*} 의 자격증명 줄이 ${_kk#*:} 로 걸린다 (HITS)" || ng "SS-k: ${_kk%%:*} 를 놓쳤다 ($_ssk)$(_diag "$T/py.err")" "${_kk#*:} · HITS"
+done
+_ssk2=$("$SSX" "$SSD/k" commit 2>&1 | grep -cF -e "$_sspw")
+[ "$_ssk2" = 0 ] && ok "SS-k: 스캔 출력에 비밀번호 더미 값이 없다" || ng "SS-k: 값이 출력에 샜다 ($_ssk2)" "0"
+
+# (h) 헤더 경로 표기 — 공백(헤더 끝 TAB)·한글+공백(quotePath 기본값이면 C 인용 \ooo)·quotePath 끔. 다른 파일에 줄이 있어도 놓치지 않는다
+for _qp in true false; do
+  ssrepo "$SSD/h-$_qp"; git -C "$SSD/h-$_qp" config core.quotePath "$_qp"
+  mkdir -p "$SSD/h-$_qp/dir with space" "$SSD/h-$_qp/한글 폴더"
+  printf 'k %s\n' "$_ssjwt" > "$SSD/h-$_qp/dir with space/x.txt"
+  printf 'k %s\n' "$_ssakia" > "$SSD/h-$_qp/한글 폴더/파일 이름.txt"
+  printf 'more\n' >> "$SSD/h-$_qp/a.txt"; git -C "$SSD/h-$_qp" add -A; sscls "$SSD/h-$_qp"
+  [ "$(ssj "$SSD/h-$_qp.cls.json" 'd["secretScan"]["status"], sorted((h["file"], h["pattern"]) for h in d["secretScan"]["hits"]), d["secretScan"]["missedFiles"]' $LINENO)" \
+     = "HITS [('dir with space/x.txt', 'jwt'), ('한글 폴더/파일 이름.txt', 'aws-access-key')] []" ] \
+    && ok "SS-h: core.quotePath=$_qp — 공백 경로(헤더 끝 TAB)·한글+공백 경로의 히트를 잡는다 (다른 파일에 줄이 있어도)" \
+    || ng "SS-h: core.quotePath=$_qp 에서 경로 표기 때문에 히트를 놓쳤다 ($(ssj "$SSD/h-$_qp.cls.json" 'd["secretScan"]' $LINENO))" "HITS · 두 파일 · missedFiles []"
+done
+# 안전망 — 파서가 파일 하나를 놓치면(검증용 PF_SECRET_SCAN_TEST_DROP) numstat 대조가 SCAN_ERROR 로 낸다
+_ssdrop=$(PF_SECRET_SCAN_TEST_DROP="dir with space/x.txt" "$SSX" "$SSD/h-true" commit 2>"$T/py.err" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["status"], d["missedFiles"])' 2>>"$T/py.err")
+[ "$_ssdrop" = "SCAN_ERROR ['dir with space/x.txt']" ] \
+  && ok "SS-h: 스캔에서 빠진 텍스트 변경 파일이 있으면 numstat 대조로 SCAN_ERROR (CLEAN·HITS 로 내지 않는다)" \
+  || ng "SS-h: 파일을 놓친 스캔이 SCAN_ERROR 가 아니다 ($_ssdrop)$(_diag "$T/py.err")" "SCAN_ERROR ['dir with space/x.txt']"
+
+# (i) 바이너리 변경은 내용을 스캔할 수 없다 — 이름과 무관하게 SENSITIVE_PATH. 키 저장소 확장자는 이름으로도 민감 경로다
+ssrepo "$SSD/i"; printf 'more\n' >> "$SSD/i/a.txt"; printf 'x\000y\001z' > "$SSD/i/blob.bin"; git -C "$SSD/i" add -A; sscls "$SSD/i"
+[ "$(ssj "$SSD/i.cls.json" '"secret-scanner" in d["selected"], d["secretScan"]["status"], d["secretScan"]["binaryFiles"], d["secretScan"]["sensitivePaths"]' $LINENO)" \
+   = "True SENSITIVE_PATH ['blob.bin'] ['blob.bin']" ] \
+  && ok "SS-i: 텍스트+바이너리 동반 변경 → 바이너리가 SENSITIVE_PATH 로 secret-scanner 선택" \
+  || ng "SS-i: 바이너리 변경이 CLEAN 으로 빠졌다 ($(ssj "$SSD/i.cls.json" 'd["secretScan"]' $LINENO))" "True SENSITIVE_PATH ['blob.bin'] ['blob.bin']"
+ssrepo "$SSD/i2"; printf 'x\000y' > "$SSD/i2/only.bin"; printf 'k\n' > "$SSD/i2/store.p12"; mkdir -p "$SSD/i2/.ssh"; printf 'k\n' > "$SSD/i2/.ssh/id_ed25519.pub"
+git -C "$SSD/i2" add -A; sscls "$SSD/i2"
+[ "$(ssj "$SSD/i2.cls.json" 'd["secretScan"]["status"], d["secretScan"]["sensitivePaths"]' $LINENO)" = "SENSITIVE_PATH ['.ssh/id_ed25519.pub', 'only.bin', 'store.p12']" ] \
+  && ok "SS-i: 바이너리만 바뀌어도 SCAN_ERROR 가 아니라 SENSITIVE_PATH, *.p12·id_ed25519* 는 이름으로 민감 경로" \
+  || ng "SS-i: 바이너리·키 저장소 판정이 어긋난다 ($(ssj "$SSD/i2.cls.json" 'd["secretScan"]' $LINENO))" "SENSITIVE_PATH [3개]"
+
+# (j) always + CLEAN 이면 프롬프트가 역할을 좁히지 않는다 — 전수 검사 지시가 남는다
+if [ -f "$T/stub-run.cjs" ]; then
+  node "$T/stub-run.cjs" "$HOME/.claude/skills/preflight/preflight.js" "$SSD/d.cls.json" dumpPrompts > "$T/ss-prompts-always.txt" 2>"$T/py.err"
+  grep -q '^### secret-scanner' "$T/ss-prompts-always.txt" && ! grep -qF '네 역할은 걸린 것의 판정' "$T/ss-prompts-always.txt" \
+    && grep -qF '지금처럼 범위 전체를 전수 검사해라' "$T/ss-prompts-always.txt" \
+    && ok "SS-j: always+CLEAN 프롬프트에 좁힌 역할 문장이 없고 전수 검사 지시가 있다" \
+    || ng "SS-j: always 카테고리의 전수 검사가 프롬프트에서 꺼졌다$(_diag "$T/py.err")" "좁힌 역할 없음 · 전수 검사 지시"
+else
+  ng "SS-j: 가짜 런타임($T/stub-run.cjs)이 없어 프롬프트를 볼 수 없다" "stub-run.cjs"
+fi
+
+# 정적 계약 — 기록 단계 재스캔과 프롬프트 블록이 코드에 있다
+grep -qF 'CONTRACT: secret-scan-recheck-at-record' "$HOME/.claude/skills/preflight/receipt.sh" \
+  && grep -qF 'CONTRACT: secret-scan-recheck-at-record' "$HOME/.claude/skills/preflight/classify.sh" \
+  && grep -qF 'CONTRACT: secret-scan-prompt-has-no-values' "$HOME/.claude/skills/preflight/preflight.js" \
+  && ok "SS: 기록 재스캔·프롬프트 계약 주석이 있다" || ng "SS: 계약 주석이 없다" "secret-scan-recheck-at-record · secret-scan-prompt-has-no-values"
+# END secret-scan-routing

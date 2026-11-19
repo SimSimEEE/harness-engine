@@ -73,6 +73,7 @@ record)
     engver=$(pf_engine_version)
     KIND="$kind" OKMODES="$(pf_ok_modes "$kind")" IT="$it" HEAD_SHA="$head" BRANCH="$branch" TS="$ts" R="$receipt" \
     LANES="$lanes" CLASSIFY="$classify" PLANJSON="$planjson" PLANQA="$planqa" PLANCLAIMS="$planclaims" COMMON_DIR="$common_dir" DIR="$dir" REPO_TOP="$repo_top" TRANSCRIPTS="$transcripts" ENGINE_VER="$engver" \
+    SECRET_SCAN_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/secret-scan.sh" \
     PF_CATS="$(pf_category_roots)" python3 - <<'PY'
 import json, os, re, subprocess, sys
 
@@ -339,6 +340,55 @@ if os.environ.get('KIND') == 'pr':
         print("  승인된 약속과 지금 추적 기준이 다르다. /plan 으로 새 planId 를 만들어 다시 승인받아라")
         print("  (같은 planId 로는 다시 넣을 수 없다 — ID 계약).")
         _log('record', 'refused', reason='plan-changed', planId=_pl.get('planId'))
+        sys.exit(1)
+
+# CONTRACT: secret-scan-recheck-at-record
+# secret-scanner 를 건너뛸지는 분류의 결정론 스캔(secretScan)이 정한다. 분류 artifact 는 고칠 수 있으므로
+# (status 를 CLEAN 으로 바꾸거나 selected 에서 secret-scanner 를 지우면 lane 이 조용히 빠진다) 여기서
+# 같은 대상을 다시 스캔한다. **범위·파일은 분류 artifact 에서 받지 않고 다시 구한다** — 커밋 모드는 HEAD 대 지금
+# 인덱스(위 index-changed 가 분류의 인덱스와 같음을 보장한다), PR 모드는 base 를 다시 해석한 merge-base..HEAD.
+# **카테고리는 분류의 선언값을 쓴다**(민감 경로 추가분 SECRET_SENSITIVE_EXTRA 를 고른다) — 카테고리 위조는 이 검사 범위 밖이다.
+#  (a) 재스캔의 status·patternsVersion 이 분류의 secretScan 과 다르면 거부한다(분류 뒤 패턴 파일이나 대상이 바뀜).
+#  (b) 재스캔이 CLEAN 이 아닌데 secret-scanner 결과가 없거나 SKIPPED·NOT_APPLICABLE 이면 거부한다.
+# 분류에 secretScan 이 없는 옛 분류는 secret-scanner 가 선택돼 있을 때만 건너뛴다 — 옛 엔진은 그 lane 을 늘 골랐다.
+# 선택되지 않았는데 secretScan 도 없으면 지어낸 분류다. 거부 사유는 모두 `secret-scan-mismatch` 다.
+# 근거는 DECISIONS.md 「시크릿 검사 결정론 우선」.
+_ss_decl = classify.get('secretScan')
+_ss_selected = 'secret-scanner' in (classify.get('selected') or {})
+if _ss_decl is not None or not _ss_selected:
+    _ss_bad = []
+    _ss_now = None
+    try:
+        _ss_argv = [os.environ['SECRET_SCAN_TOOL'], os.environ['DIR'], 'pr' if os.environ.get('KIND') == 'pr' else 'commit']
+        _ss_cat = classify.get('category')
+        if isinstance(_ss_cat, str) and _ss_cat:
+            _ss_argv += ['--category', _ss_cat]
+        _ss_p = subprocess.run(_ss_argv, capture_output=True, text=True, timeout=120)
+        _ss_now = json.loads(_ss_p.stdout) if _ss_p.returncode == 0 else None
+    except Exception:
+        _ss_now = None
+    if not isinstance(_ss_now, dict) or not _ss_now.get('status'):
+        _ss_now = {'status': 'SCAN_ERROR', 'patternsVersion': None, 'reason': 'secret-scan.sh 재실행 실패'}
+    if not isinstance(_ss_decl, dict):
+        _ss_bad.append('분류에 secretScan 이 없는데 secret-scanner 도 선택되지 않았다')
+    else:
+        for _k in ('status', 'patternsVersion'):
+            if _ss_decl.get(_k) != _ss_now.get(_k):
+                _ss_bad.append(f"{_k}: 분류 {_ss_decl.get(_k)!r} != 재스캔 {_ss_now.get(_k)!r}")
+    _ss_lane = lanes.get('secret-scanner')
+    _ss_lane_st = (_ss_lane.get('status') if isinstance(_ss_lane, dict) else _ss_lane) or ''
+    # 선택된 lane 의 결과가 아예 없는 경우는 아래 no-gate-run·incomplete-lanes 가 잡는다 — 사유 코드를 섞지 않는다.
+    if _ss_now.get('status') != 'CLEAN' and (_ss_lane_st in ('SKIPPED', 'NOT_APPLICABLE')
+                                             or (not _ss_lane_st and not _ss_selected)):
+        _ss_bad.append(f"재스캔 {_ss_now.get('status')} 인데 secret-scanner 결과가 "
+                       + ('없다' if not _ss_lane_st else _ss_lane_st))
+    if _ss_bad:
+        print("게이트 기록 거부 — 결정론 시크릿 스캔이 분류·기록과 맞지 않는다")
+        for _b in _ss_bad: print(f"    {_b}")
+        print("  분류 뒤 패턴 파일·대상이 바뀌었거나 분류 artifact 를 고친 것이다. classify.sh 부터 게이트를 다시 돌려라.")
+        _log('record', 'refused', reason='secret-scan-mismatch', detail=_ss_bad,
+             declared=(_ss_decl.get('status') if isinstance(_ss_decl, dict) else None),
+             rescanned=_ss_now.get('status'), patternsVersion=_ss_now.get('patternsVersion'))
         sys.exit(1)
 
 selected = classify.get('selected') or {}

@@ -6,6 +6,11 @@ _MT = 'skills/preflight/meta-test.sh'
 _HOOK = 'hooks/preflight-gate.sh'
 
 
+# 시크릿 검사 라우팅(classify.sh). 'auto' — 결정론 스캔(secret-scan.sh)이 CLEAN 이면 secret-scanner 를 건너뛴다.
+# 상수가 없으면 'always'(늘 선택)다. 민감 경로를 더하려면 SECRET_SENSITIVE_EXTRA = ('<glob>', ...) 를 둔다.
+SECRET_SCAN = 'auto'
+
+
 # 스위트가 **스냅숏에** 있는가로 본다 — 미추적 사본만 있으면 커밋될 레포는 게이트 레포가 아니다.
 def match(ctx):
     return [_MT, _HOOK] if (ctx.snap_has(_MT) and ctx.snap_has(_HOOK)) else []

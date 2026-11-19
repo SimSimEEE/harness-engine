@@ -1019,6 +1019,37 @@ function prBodyBlock() {
           `\`gh pr view\`·브랜치 파일 등에서 본문을 찾아 나서지도 마라.\n`;
 }
 
+// 결정론 스캔(secret-scan.sh) 결과를 secret-scanner 프롬프트에 싣는다(DECISIONS.md 「시크릿 검사 결정론 우선」).
+// 역할을 "걸린 것 판정" 으로 좁히는 것은 auto 카테고리에서 스캔이 HITS·SENSITIVE_PATH 일 때뿐이다 — 그때만 깨끗한 나머지가
+// 결정론으로 걸러졌다. always(카테고리가 늘 부른다)·SCAN_ERROR 는 결과를 참고로만 주고 지금처럼 범위 전체를 검사하게 한다.
+// 패턴 정본은 secret-patterns.json 이고, 분류에는 값이 없다 — 걸린 위치·패턴 이름·민감 경로만 넘긴다.
+// CONTRACT: secret-scan-prompt-has-no-values
+function secretScanBlock(s) {
+    const hits = Array.isArray(s.hits) ? s.hits : [];
+    const sens = Array.isArray(s.sensitivePaths) ? s.sensitivePaths : [];
+    const HCAP = 50;
+    const narrow = s.mode === 'auto' && (s.status === 'HITS' || s.status === 'SENSITIVE_PATH');
+    return (
+        `**결정론 시크릿 스캔 결과 (계산됨 — 패턴 v${s.patternsVersion ?? '?'}, ${s.scannedLines ?? '?'}줄, 상태 ${s.status}):**\n` +
+        (hits.length
+            ? `  걸린 위치 (파일:줄 — 패턴 · 등급):\n` +
+              hits.slice(0, HCAP).map(h => `    - ${h.file}:${h.line} — ${h.pattern} · ${h.grade}`).join('\n') + '\n' +
+              (hits.length > HCAP || s.hitsTruncated
+                  ? `    … 외 ${hits.length - Math.min(hits.length, HCAP) + (s.hitsTruncated || 0)}건 — 같은 패턴으로 diff 를 직접 훑어라\n`
+                  : '')
+            : `  걸린 위치: 없음\n`) +
+        (sens.length ? `  민감 경로 변경(내용을 스캔할 수 없는 바이너리 포함): ${sens.join(', ')}\n` : `  민감 경로 변경: 없음\n`) +
+        (narrow
+            ? `**네 역할은 걸린 것의 판정과 민감 경로 파일의 내용 확인이다.** 걸린 위치마다 허용 패턴(암호문 표식·플레이스홀더·` +
+              `테스트 더미값 등)을 적용해 ERROR/WARNING/제외를 정해라. 등급 removed 는 삭제 라인이다 — 이미 히스토리에 있으므로 WARNING 후보로만 본다. ` +
+              `민감 경로 파일은 걸린 위치 밖도 그 파일의 추가 라인을 읽어라(패턴 밖의 기본 비밀번호·키를 찾는다). 바이너리면 무엇인지(키 저장소 등) 판정해라. `
+            : `**결정론 결과는 참고로만 보고, 지금처럼 범위 전체를 전수 검사해라** ` +
+              (s.status === 'SCAN_ERROR' ? `(스캔이 끝나지 않았다: ${s.reason ?? '사유 미상'}). ` : `(이 카테고리는 결정론 스캔으로 이 lane 을 건너뛰지 않는다). `) +
+              `걸린 위치와 민감 경로는 먼저 볼 곳일 뿐 검사 범위가 아니다. `) +
+        `패턴 표는 secret-patterns.json 이 정본이다 — 다시 정의하지 마라. 보고에 값을 옮겨 적지 마라.\n`
+    );
+}
+
 function laneMetaBlock(lane) {
     const m = laneMeta[lane] ?? {};
     return (
@@ -1041,6 +1072,8 @@ function laneMetaBlock(lane) {
               `\`--cached\` 나 \`diff HEAD\` 는 비어 있다 — 그것을 "검사할 것이 없다"로 읽지 마라.\n`
             : '') +
         (m.placement ? `⚠️ ${m.placement}\n` : '') +
+        // 결정론 스캔(secret-scan.sh)이 넘긴 것. 값은 분류에 없다 — 위치와 패턴 이름뿐이다.
+        (m.scan && lane === 'secret-scanner' ? secretScanBlock(m.scan) : '') +
         (m.modules || m.apiFiles
             ? `**이번 변경이 닿은 곳 (계산됨 — 다시 찾지 마라):**\n` +
               (m.modules?.length ? `  모듈: ${m.modules.join(', ')}\n` : '  모듈: (없음)\n') +
