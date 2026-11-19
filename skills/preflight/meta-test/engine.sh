@@ -5269,6 +5269,81 @@ done
 _ssk2=$("$SSX" "$SSD/k" commit 2>&1 | grep -cF -e "$_sspw")
 [ "$_ssk2" = 0 ] && ok "SS-k: 스캔 출력에 비밀번호 더미 값이 없다" || ng "SS-k: 값이 출력에 샜다 ($_ssk2)" "0"
 
+# (l) 키 이름이 따옴표로 닫힌 뒤 구분자가 오는 형태(JSON·dict·해시) — 키 따옴표(큰·작은·없음) × 구분자(: = =>) × 값 따옴표.
+#     잡아야 할 조합은 파일 하나에 한 줄씩 두고 각 파일이 기대 패턴으로 걸리는지 본다(suspect, 판정은 LLM).
+_ssv=$(python3 -c 'print("Qz7" + "dummy" + "Val" + "9" * 6)')
+ssrepo "$SSD/l"; mkdir -p "$SSD/l/q"
+while IFS='|' read -r _lc _lf _lp; do
+  [ -n "$_lc" ] && printf "$_lf\n" "$_ssv" > "$SSD/l/q/$_lc.txt"
+done <<'SSCASES'
+dq-colon|  "SecretKey": "%s",|secret-like-quoted-key
+dq-eq|  "SessionToken" = "%s"|secret-like-quoted-key
+dq-arrow|  "secretAccessKey" => "%s",|secret-like-quoted-key
+sq-colon|  'apiKey': '%s',|secret-like-quoted-key
+sq-eq|  'client_secret' = '%s'|secret-like-quoted-key
+sq-arrow|  'accessKey' => "%s",|secret-like-quoted-key
+dq-password|  "password": "%s",|secret-like-quoted-key
+dq-subscript|cfg["api_key"] = "%s"|secret-like-quoted-key
+bare-colon|  sessionKey: "%s"|secret-like-assign
+bare-eq|accessToken = '%s'|secret-like-assign
+bare-arrow|  :client_secret => "%s",|secret-like-assign
+SSCASES
+git -C "$SSD/l" add -A
+"$SSX" "$SSD/l" commit > "$T/ss-l.out" 2>"$T/py.err"  # py-err-front
+while IFS='|' read -r _lc _lp; do
+  python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); f="q/"+sys.argv[2]+".txt"; sys.exit(0 if d["status"]=="HITS" and sys.argv[3] in [h["pattern"] for h in d["hits"] if h["file"]==f] else 1)' "$T/ss-l.out" "$_lc" "$_lp" 2>>"$T/py.err" \
+    && ok "SS-l: $_lc 형태가 $_lp 로 걸린다 (HITS)" || ng "SS-l: $_lc 형태를 놓쳤다$(_diag "$T/py.err")" "$_lp · HITS"
+done <<'SSEXP'
+dq-colon|secret-like-quoted-key
+dq-eq|secret-like-quoted-key
+dq-arrow|secret-like-quoted-key
+sq-colon|secret-like-quoted-key
+sq-eq|secret-like-quoted-key
+sq-arrow|secret-like-quoted-key
+dq-password|secret-like-quoted-key
+dq-subscript|secret-like-quoted-key
+bare-colon|secret-like-assign
+bare-eq|secret-like-assign
+bare-arrow|secret-like-assign
+SSEXP
+[ "$(grep -cF -e "$_ssv" "$T/ss-l.out")" = 0 ] && ok "SS-l: 스캔 출력에 더미 값이 없다" || ng "SS-l: 값이 출력에 샜다" "0"
+# 의도적으로 안 잡는 조합 — 따옴표 키 + 따옴표 없는 값(JSON 이면 숫자·불리언, 코드면 변수·식 참조),
+#   따옴표 없는 키 + => + 따옴표 없는 값(변수 참조), 8자 미만 값. 이 레포는 auto 라 CLEAN 이면 secret-scanner 를 건너뛴다
+ssrepo "$SSD/l2"
+{ printf '  "SecretKey": %s,\n' "$_ssv"; printf "  'apiKey': os.environ['API_KEY'],\n"
+  printf '  token => $session_value,\n'; printf '  "token": "short",\n'; } > "$SSD/l2/c.txt"
+git -C "$SSD/l2" add -A
+[ "$("$SSX" "$SSD/l2" commit 2>"$T/py.err" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["status"], len(d["hits"]))' 2>>"$T/py.err")" = "CLEAN 0" ] \
+  && ok "SS-l: 따옴표 키+따옴표 없는 값·=> 변수 참조·8자 미만 값은 의도적으로 안 잡는다 (CLEAN)" \
+  || ng "SS-l: 안 잡기로 한 조합이 걸렸다$(_diag "$T/py.err")" "CLEAN 0"
+
+# (n) PR 모드 base 이동 — 분류 뒤 base 브랜치가 움직여 merge-base 가 바뀌면 재스캔 범위가 달라진다.
+#     그 거부는 secret-scan-base-moved 로, base 가 그대로인데 artifact 의 status 만 다르면 secret-scan-mismatch 로 가른다.
+ssrepo "$SSD/n"; git -C "$SSD/n" update-ref refs/remotes/origin/main "$(git -C "$SSD/n" rev-parse HEAD)"
+git -C "$SSD/n" checkout -q -b feat/x
+printf 'k %s\n' "$_ssjwt" > "$SSD/n/s.txt"; git -C "$SSD/n" add -A; git -C "$SSD/n" "$G" -qm s
+_ssn_s=$(git -C "$SSD/n" rev-parse HEAD)
+printf 'more\n' >> "$SSD/n/a.txt"; git -C "$SSD/n" add -A; git -C "$SSD/n" "$G" -qm c
+_ssng="$(git -C "$SSD/n" rev-parse --absolute-git-dir)/claude-preflight.classify.json"
+"$CL" "$SSD/n" pr > /dev/null 2>"$T/ss-cl.err"; cp "$_ssng" "$SSD/n.honest.json"
+# (d) base 그대로, status 만 고친 artifact → secret-scan-mismatch
+ssforge "$SSD/n.honest.json" "$SSD/n.f1.json" clean-keep
+[ "$(ssrec "$SSD/n" pr '{"secret-scanner":"PASS"}' "$SSD/n.f1.json")" = "('refused', 'secret-scan-mismatch')" ] \
+  && ok "SS-n: PR 모드에서 base 는 그대로 두고 artifact 의 status 만 고치면 secret-scan-mismatch" \
+  || ng "SS-n: status 위조 거부 사유가 어긋난다 ($(cat "$T/ss-rec.out"))" "refused secret-scan-mismatch"
+grep -qF '분류 artifact 가 바뀌었다' "$T/ss-rec.out" && ! grep -qF 'base 브랜치가 움직였다' "$T/ss-rec.out" \
+  && ok "SS-n: base 가 그대로면 메시지는 artifact 변경을 말하고 base 이동을 말하지 않는다" || ng "SS-n: mismatch 메시지가 어긋난다 ($(cat "$T/ss-rec.out"))" "분류 artifact 가 바뀌었다"
+# (c) 분류 뒤 base 가 시크릿 커밋까지 앞서면(그 커밋이 base 에 머지됨) 재스캔은 CLEAN — 분류 HITS 와 달라 거부, 사유 base-moved
+git -C "$SSD/n" update-ref refs/remotes/origin/main "$_ssn_s"
+[ "$(ssrec "$SSD/n" pr '{"secret-scanner":"PASS"}' "$SSD/n.honest.json")" = "('refused', 'secret-scan-base-moved')" ] \
+  && ok "SS-n: PR 모드에서 분류 뒤 base 가 움직이면 record 가 secret-scan-base-moved 로 거부" \
+  || ng "SS-n: base 이동 거부 사유가 어긋난다 ($(cat "$T/ss-rec.out"))" "refused secret-scan-base-moved"
+grep -qF '분류 이후 base 브랜치가 움직였다 — 분류부터 다시 돌려라' "$T/ss-rec.out" \
+  && ok "SS-n: base 이동 거부 메시지가 분류부터 다시 돌리라고 한다" || ng "SS-n: base 이동 메시지가 없다 ($(cat "$T/ss-rec.out"))" "분류 이후 base 브랜치가 움직였다"
+# 관측 로그 절의 `outcome: refused` 사유 나열(다음 `- `event:` 항목 전까지)만 본다 — 라우팅 표의 언급은 세지 않는다
+python3 -c 'import sys; s=open(sys.argv[1], encoding="utf-8").read(); i=s.index("- `event: record` / `outcome: refused`"); seg=s[i:s.index("\n- `event:", i + 1)]; sys.exit(0 if all(r in seg for r in ("`secret-scan-mismatch`", "`secret-scan-base-moved`")) else 1)' "$HOME/.claude/skills/preflight/SKILL.md" 2>"$T/py.err" \
+  && ok "SS-n: 두 거부 사유가 SKILL.md 관측 로그 사유 목록에 있다" || ng "SS-n: 운영자가 읽는 곳에 시크릿 스캔 거부 사유가 없다" "secret-scan-mismatch · secret-scan-base-moved"
+
 # (h) 헤더 경로 표기 — 공백(헤더 끝 TAB)·한글+공백(quotePath 기본값이면 C 인용 \ooo)·quotePath 끔. 다른 파일에 줄이 있어도 놓치지 않는다
 for _qp in true false; do
   ssrepo "$SSD/h-$_qp"; git -C "$SSD/h-$_qp" config core.quotePath "$_qp"

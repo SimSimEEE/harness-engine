@@ -351,7 +351,9 @@ if os.environ.get('KIND') == 'pr':
 #  (a) 재스캔의 status·patternsVersion 이 분류의 secretScan 과 다르면 거부한다(분류 뒤 패턴 파일이나 대상이 바뀜).
 #  (b) 재스캔이 CLEAN 이 아닌데 secret-scanner 결과가 없거나 SKIPPED·NOT_APPLICABLE 이면 거부한다.
 # 분류에 secretScan 이 없는 옛 분류는 secret-scanner 가 선택돼 있을 때만 건너뛴다 — 옛 엔진은 그 lane 을 늘 골랐다.
-# 선택되지 않았는데 secretScan 도 없으면 지어낸 분류다. 거부 사유는 모두 `secret-scan-mismatch` 다.
+# 선택되지 않았는데 secretScan 도 없으면 지어낸 분류다. 거부 사유는 `secret-scan-mismatch` 다 — 단 PR 모드에서 status 가
+# 갈렸고 분류 artifact 의 base(`base.mergeBase`, 없으면 `base.diffFrom`)가 재스캔이 다시 구한 범위 시작(`range.from`)과
+# 다르면 `secret-scan-base-moved` 다(분류 뒤 base 브랜치가 움직임). 둘 다 거부이고 사유만 가른다.
 # 근거는 DECISIONS.md 「시크릿 검사 결정론 우선」.
 _ss_decl = classify.get('secretScan')
 _ss_selected = 'secret-scanner' in (classify.get('selected') or {})
@@ -382,13 +384,28 @@ if _ss_decl is not None or not _ss_selected:
                                              or (not _ss_lane_st and not _ss_selected)):
         _ss_bad.append(f"재스캔 {_ss_now.get('status')} 인데 secret-scanner 결과가 "
                        + ('없다' if not _ss_lane_st else _ss_lane_st))
+    _ss_reason, _ss_base_decl, _ss_base_now = 'secret-scan-mismatch', None, None
+    if (_ss_bad and os.environ.get('KIND') == 'pr' and isinstance(_ss_decl, dict)
+            and _ss_decl.get('status') != _ss_now.get('status')):
+        _ss_b = classify.get('base') if isinstance(classify.get('base'), dict) else {}
+        _ss_base_decl = _ss_b.get('mergeBase') or _ss_b.get('diffFrom') or None
+        _ss_rng = _ss_now.get('range') if isinstance(_ss_now.get('range'), dict) else {}
+        _ss_base_now = _ss_rng.get('from') or None
+        if _ss_base_decl and _ss_base_now and _ss_base_decl != _ss_base_now:
+            _ss_reason = 'secret-scan-base-moved'
     if _ss_bad:
         print("게이트 기록 거부 — 결정론 시크릿 스캔이 분류·기록과 맞지 않는다")
         for _b in _ss_bad: print(f"    {_b}")
-        print("  분류 뒤 패턴 파일·대상이 바뀌었거나 분류 artifact 를 고친 것이다. classify.sh 부터 게이트를 다시 돌려라.")
-        _log('record', 'refused', reason='secret-scan-mismatch', detail=_ss_bad,
+        if _ss_reason == 'secret-scan-base-moved':
+            print(f"    base: 분류 {_ss_base_decl[:12]} != 지금 {_ss_base_now[:12]}")
+            print("  분류 이후 base 브랜치가 움직였다 — 분류부터 다시 돌려라 (classify.sh 부터 게이트를 다시).")
+        else:
+            print("  분류 artifact 가 바뀌었다 — 분류 뒤 패턴 파일·대상이 바뀌었거나 artifact 를 고친 것이다. classify.sh 부터 게이트를 다시 돌려라.")
+        _log('record', 'refused', reason=_ss_reason, detail=_ss_bad,
              declared=(_ss_decl.get('status') if isinstance(_ss_decl, dict) else None),
-             rescanned=_ss_now.get('status'), patternsVersion=_ss_now.get('patternsVersion'))
+             rescanned=_ss_now.get('status'), patternsVersion=_ss_now.get('patternsVersion'),
+             **({'baseDeclared': _ss_base_decl[:12], 'baseNow': _ss_base_now[:12]}
+                if _ss_reason == 'secret-scan-base-moved' else {}))
         sys.exit(1)
 
 selected = classify.get('selected') or {}

@@ -475,7 +475,7 @@ lane 의 **보고**가 아니라 **실행 사실**을 본다 — 각 lane 이 �
 | `wiki/ projects/ outputs/ areas/` 의 `.md` (`vault` 카테고리) | `vault-linter` |
 | `@types/**`, `package.json` 의 version·의존성 | `crossrepo-impact` |
 | `@types/tsconfig.build.json` 이 전이적으로 닿는 소스 | `crossrepo-impact` |
-| 무엇이 바뀌든 | `secret-scanner` — 카테고리가 `SECRET_SCAN = 'auto'` 면 결정론 스캔(`secret-scan.sh`, 패턴 정본 `secret-patterns.json`)이 `HITS`·`SENSITIVE_PATH`·`SCAN_ERROR` 일 때만 돈다(`CLEAN` 이면 `secret-scan-clean` 사유). 상수가 없거나 `'always'`, 또는 `all` 모드면 **항상**. 기록이 같은 대상을 다시 스캔해 분류와 다르면 `secret-scan-mismatch` 로 거부한다 |
+| 무엇이 바뀌든 | `secret-scanner` — 카테고리가 `SECRET_SCAN = 'auto'` 면 결정론 스캔(`secret-scan.sh`, 패턴 정본 `secret-patterns.json`)이 `HITS`·`SENSITIVE_PATH`·`SCAN_ERROR` 일 때만 돈다(`CLEAN` 이면 `secret-scan-clean` 사유). 상수가 없거나 `'always'`, 또는 `all` 모드면 **항상**. 기록이 같은 대상을 다시 스캔해 분류와 다르면 `secret-scan-mismatch` 로 거부한다(PR 모드에서 분류 뒤 base 가 움직였으면 `secret-scan-base-moved`) |
 | PR 게이트 | `pr-quality`, (등록 조회 규칙이 있는 카테고리이고 vault 등록 레포면) `vault-sync` — **미등록이면 lane 이 아니라 기록 자체가 거부된다** (다른 카테고리는 등록 조회를 하지 않는다 — `vaultLink.status = NOT_APPLICABLE`) |
 | PR 게이트 + 계획 artifact 존재 | `requirements-tracer` (계획에 `how: review` 항목이 있으면 `code-reviewer` → `requirements-tracer`, `how: test` 항목이 있으면 `test-runner` → `requirements-tracer` 순차) |
 | **커밋 게이트 + `--qa`** (배포 후) | `qa-runner` → `qa-reviewer` (순차, **prod 접근 금지**). QA 의 기본 자리다 |
@@ -584,6 +584,8 @@ PR 시점에는 마일스톤 완료가 아직 참이 아니다. 그때 노트 �
    `suite-not-run` — 분류기가 정한 회귀 명령을 test-runner 가 부르지 않았다,
    `harness-view-stale` — README 의 하네스 뷰가 뒤처졌다,
    `vault-unregistered`, `plan-changed` — PR 게이트에서 결속된 계획의 claim 이 승인 뒤 바뀜,
+   `secret-scan-mismatch` — 기록 단계 재스캔이 분류의 결정론 시크릿 스캔과 다르다(분류 artifact 가 바뀜),
+   `secret-scan-base-moved` — PR 모드에서 분류 이후 base 브랜치가 움직여 재스캔 범위가 달라졌다,
    전사를 넘겼을 때만: `no-lane-evidence`·`sequence-violated`·`concealed-promotion`·`transcripts-unreadable`)
 - `event: verify` / `outcome: allowed|denied` — 훅이 실제로 무엇을 통과·차단했는가
 - `event: hook` / `outcome: bypassed` — **`PREFLIGHT_SKIP="<사유>"` 로 게이트를 우회한 사건**
