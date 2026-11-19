@@ -1092,7 +1092,11 @@ function laneMetaBlock(lane) {
             ? `**이 레포의 회귀 명령 (계산됨 — 고르지 말고 전부 돌려라):**\n` +
               m.suites.filter(x => x.name !== 'mutation').map(x => `  - ${x.name}: \`${withSnap(x.cmd)}\` (이번 변경: ${x.why.slice(0, 5).join(', ')}${x.why.length > 5 ? ` 외 ${x.why.length - 5}건` : ''})`).join('\n') + '\n' +
               `기준선 비교 없이 하나라도 실패하면 verdict=FAIL + blocking=true 다. 통과·실패 수를 metrics 에 적어라. ` +
-              `돌리지 못했으면 그것도 FAIL 이다 — 건너뛴 회귀 명령은 통과가 아니고, 기록 단계가 실행 흔적을 확인한다.\n`
+              `돌리지 못했으면 그것도 FAIL 이다 — 건너뛴 회귀 명령은 통과가 아니고, 기록 단계가 실행 흔적을 확인한다.\n` +
+              `각 명령은 포그라운드로 끝까지 돌려라(Bash \`timeout: 600000\`, \`run_in_background\` 금지) — 종료 코드와 통과·실패 수를 보기 전에 보고하지 마라.\n` +
+              (m.suites.some(x => x.name === 'meta-test')
+                  ? `meta-test 의 검사 대상은 출력의 "== 격리 실행" 줄로 확인하라 — \`~/.claude\` 설치본과의 차이는 판정 근거가 아니다.\n`
+                  : '')
             : '') +
         (m.conventionCheck
             ? `**관례 검사는 \`${m.conventionCheck} <변경 파일>\` 로 돌려라 — 경로는 확정값이다, \`~/.claude\` 를 가정하지 마라.**\n`

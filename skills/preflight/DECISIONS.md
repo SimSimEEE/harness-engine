@@ -300,3 +300,19 @@ a=70 a_sessions=13 b=62 main=202 home=45 norepo=78 path_outside_repo=9
   CONTRACT `secret-scan-recheck-at-record`), `preflight.js`(`secretScanBlock`), `agents/secret-scanner.md`(역할),
   `categories/shell-tool/rules.py`(`SECRET_SCAN = 'auto'`)·`categories/generic/rules.py`(상수 없음 — always), `meta-test/engine.sh`(회귀). `ENGINE_VERSION` 2.2 → **2.3**
   (호환되는 추가 — 새 선택 상수 둘, 프로필 계약은 그대로).
+
+### `test-runner` 0.7 — 설치본 diff 규칙을 버리고 격리 실행 줄로 검사 대상을 확인한다
+
+- **무엇**: `agents/test-runner.md` 0.7 의 "`diff -q <레포>/hooks/… $HOME/.claude/hooks/…` 가 갈리면 blocking" 규칙을 지웠다.
+  meta-test 는 임시 HOME 에 스냅숏(오버레이 레포면 엔진 + 스냅숏 오버레이)을 설치본으로 삼아 돌므로, 검사 대상은 출력의
+  `== 격리 실행: …` 줄로 확인하고 `~/.claude` 설치본과의 차이는 판정 근거가 아니다. 그 줄이 없거나 경로가 스냅숏이 아닐 때만
+  검사 대상이 틀린 것으로 막는다. 함께, 회귀 명령은 포그라운드로 끝까지(`timeout: 600000`, `run_in_background` 금지) 돌리고
+  종료 코드와 통과·실패 수를 본 뒤에 보고한다 — `preflight.js` 의 회귀 명령 프롬프트에도 같은 문장을 넣었다(meta-test 가
+  목록에 있을 때만 격리 줄 문장을 붙인다).
+- **왜**: 설치본은 머지·재설치 전에는 언제나 옛 판이라, 훅을 고치는 커밋은 그 규칙대로면 매번 FAIL 이다. 2026-11-19
+  한 브랜치에서 이 지적이 커밋·PR 게이트에 되풀이돼 사유를 남긴 우회로 넘겼고, 같은 변경이 통과한 라운드도 있었다 — 판정이
+  흔들렸다. 별도로 meta-test 를 백그라운드로 띄우고 끝나기 전에 보고해 "통과·실패 수 미확인" 으로 막힌 실행도 있었다.
+- **측정**: flip 입력 `eval/fixtures/overlay-hooks-change.sh`(측정 전용 카테고리 `eval-overlay`, 기대 `test-runner` PASS)를
+  더했다. 정의 변경 전후 수치는 PR 본문에 둔다.
+- **어디**: `agents/test-runner.md` 0.6·0.7 공통 문단과 0.7, `skills/preflight/preflight.js` 회귀 명령 블록,
+  `eval/fixtures/overlay-hooks-change.sh`·`eval/fixtures/overlay-hooks-regress.sh`·`eval/fixtures/_overlay/categories/eval-overlay/`, `SKILL.md` 참고 절.
