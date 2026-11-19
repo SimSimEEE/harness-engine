@@ -650,6 +650,8 @@ Rev.5 를 논하기 전에 여기서 세어야 할 것: 거부 사유 분포, wa
   verdict·lane 상태가 `MEASUREMENT_ONLY` 로 나와 영수증에 기록되지 않고(실제 판정은 `lanes[].measuredStatus`),
   데이터 스크립트 적재(`classificationScript`)와 함께 오면 워크플로가 거부한다. 입력이 `<입력>/overlay` 를 들고 오면
   분류는 그 오버레이만 쓴다 — `vault-*`·`node-*` 입력은 엔진 밖 규칙 없이 lane 을 고르게 하는 측정 전용 카테고리를 싣는다
+  `overlay-*` 입력은 오버레이 레포의 훅 변경을 재현한다 — 격리 meta-test 가 통과하는데 `test-runner` 가 `~/.claude` 설치본과의
+  차이나 끝나지 않은 실행을 이유로 막는지(기대 PASS, 회귀 짝 `-regress` 는 기대 FAIL) 잰다
   측정되는 에이전트 정의는 이 레포가 아니라 **설치본**(`~/.claude/agents`, 오버레이가 덮었으면 오버레이 것)이다 — manifest 의
   `agentSources` 가 실경로를 남기고, 레포 정의와 다르면 prepare·score 가 경고한다
 - 재측정(③) 측정: `$P/eval/flip.sh remeasure-prepare` 로 `eval/claims/remeasure-*.sh` 입력을 만들고 각 `args.json` 으로
