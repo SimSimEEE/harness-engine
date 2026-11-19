@@ -10,6 +10,23 @@ blocking 없이 끝났다. 게이트가 요구한 것이 아니라 참고를 쫓
 
 ## 열림
 
+### record 단계가 카테고리의 `SECRET_SCAN` 을 다시 계산하지 않는다
+위치: `skills/preflight/receipt.sh` record 의 재스캔(CONTRACT `secret-scan-recheck-at-record`) · `skills/preflight/classify.sh`
+`SECRET_SCAN_MODE`.
+
+재스캔은 범위·파일을 다시 구하지만 "그 카테고리가 always 인가" 는 다시 보지 않는다. always 카테고리에서 분류 artifact 를 고쳐
+`selected` 에서 `secret-scanner` 를 빼고 `secretScan` 을 그대로 두면, 재스캔이 CLEAN 일 때 기록이 통과한다(재스캔이 CLEAN 이
+아니면 지금도 거부한다). 이번 변경 전에도 같았다 — 그때도 record 는 분류의 `selected` 를 필수 lane 의 근거로 썼다(회귀 아님).
+
+재현: SECRET_SCAN 이 없는 카테고리 레포에서 깨끗한 변경을 스테이징하고 `classify.sh <repo> commit` → artifact 의 `selected` 에서
+`secret-scanner` 를 지우고 `notSelected` 에 아무 사유나 넣는다 → `receipt.sh record commit <repo> '{}'` 가 기록된다.
+
+→ 닫는 방법: record 에서 선언 카테고리의 `rules.py` 를 읽어 mode 를 다시 계산하고(`all` 분류는 always), always 면 재스캔 결과와
+무관하게 `secret-scanner` 결과(SKIPPED·NOT_APPLICABLE 아님)를 요구한다.
+
+**먼저 셀 것**: 관측 로그의 record 이벤트 가운데 분류 artifact 를 고친 흔적(기록의 lane 집합이 분류의 `selected` 와 어긋남,
+`classify-sha256` 과 다른 artifact)이 있는 기록 수.
+
 ### 프로필 영향도가 커밋 제목 형식에 기댄다
 `profile-measure.sh` 의 수정 커밋 판정 `FIX_RE`(126행)는 제목만 본다 — `fix`/`hotfix`/`revert` conventional 제목과
 `Revert "` 만 수정 커밋이다. conventional 제목을 쓰지 않는 레포(제목이 자연어 문장)에서는 수정 커밋이 하나도 잡히지 않아

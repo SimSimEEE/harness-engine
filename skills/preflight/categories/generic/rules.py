@@ -7,3 +7,7 @@
 
 def match(ctx):
     return []
+
+
+# 시크릿 검사 라우팅: SECRET_SCAN 을 두지 않는다(= 'always', 늘 secret-scanner). 미분류 레포가 모두 여기 오므로 'auto' 면
+# 미분류 문서 레포의 개인 데이터 검사와 정규식 밖 자격증명 검사가 함께 빠진다.

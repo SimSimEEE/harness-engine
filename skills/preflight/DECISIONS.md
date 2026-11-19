@@ -259,3 +259,44 @@ a=70 a_sessions=13 b=62 main=202 home=45 norepo=78 path_outside_repo=9
 프로필을 오버레이의 `profiles/` 에 쓴다(공개 엔진에 레포 정보를 남기지 않는다). 그 지시대로면 프로필은 오버레이에, 그 레포
 이름이 적힌 결정 기록은 공개 엔진에 남는다. 이제 결정 기록은 프로필이 쓰인 레포 — 오버레이면 `<오버레이>/docs/DECISIONS.md`,
 없으면 엔진 `DECISIONS.md` — 에 쓰고, 둘을 같은 레포에 커밋한다. 어디: `skills/harness-profile/SKILL.md` 흐름도·7단계.
+
+## 2026-11-19
+
+### 시크릿 검사 결정론 우선 — 정규식이 걸러 넘긴 것만 `secret-scanner` 가 판정한다
+
+- **무엇**: 분류기가 `secret-scan.sh` 로 변경(커밋 모드 HEAD 대 인덱스, PR 모드 merge-base..HEAD)의 추가·삭제 라인을
+  `secret-patterns.json`(패턴·민감 경로 정본, `version` 포함)으로 스캔한다. 결과는 `CLEAN`·`HITS`·`SENSITIVE_PATH`·`SCAN_ERROR`
+  이고, 분류 JSON 의 `secretScan` 에 값 없이(패턴 이름·파일·줄 번호만) 남는다. 카테고리 rules.py 의 `SECRET_SCAN` 이 `'auto'`
+  일 때만 `CLEAN` 이면 `secret-scanner` 를 건너뛴다(사유 `secret-scan-clean — …`). 그 밖에는 걸린 위치·민감 경로를
+  `laneMeta['secret-scanner'].scan` 으로 프롬프트에 넘기고, lane 은 "걸린 것 판정 + 민감 경로 파일 내용 확인" 을 한다.
+  카테고리는 `SECRET_SENSITIVE_EXTRA` 로 민감 경로 glob 을 더한다. `receipt.sh record` 는 범위·파일을 분류 artifact 에서
+  받지 않고 다시 구해 같은 대상을 다시 스캔해(카테고리는 선언값), status·patternsVersion 이 분류와 다르거나 `CLEAN` 이 아닌데 `secret-scanner` 결과가 없거나 SKIPPED 면
+  거부한다(`secret-scan-mismatch`).
+- **경로·바이너리 처리**: diff 헤더 경로 표기(`/dev/null`, `a/`·`b/` 접두, 공백 경로의 끝 TAB, `core.quotePath` 에 따른
+  C 인용 `"…"`+`\ooo`)를 모두 풀고, 같은 범위의 `git diff --numstat -z` 가 줄 변경이 있다고 한 텍스트 파일이 스캔에서
+  하나라도 빠지면 SCAN_ERROR 다(파서 누락이 CLEAN 이 되지 않게). 바이너리(`-\t-`)는 내용을 못 보므로 이름과 무관하게 민감
+  경로로 보고, 키 저장소 확장자(`*.p12`·`*.pfx`·`*.jks`·`*.keystore`·`id_rsa*`·`id_ed25519*`)를 민감 경로에 더했다. 따옴표 없는 비밀번호
+  할당(YAML·properties·env)과 접속 URL 에 박힌 자격증명은 suspect 패턴으로 LLM 에 넘긴다 — 플레이스홀더는 정규식에서 거르지
+  않고 판정에 맡긴다(오탐은 비용, 미탐은 사고). 패턴 정본은 v3 이다.
+  프롬프트의 역할은 auto 카테고리의 HITS·SENSITIVE_PATH 에서만 "걸린 것 판정" 으로 좁히고, always·SCAN_ERROR 는 전수 검사다.
+- **기본값은 현행 유지(opt-in)**: 상수가 없거나 `'always'` 면 지금처럼 늘 선택하고, 스캔 결과는 기록만 한다. 엔진·오버레이의
+  배포 순서와 무관하게 오버레이 카테고리는 바뀌지 않는다. 이 엔진에서는 `shell-tool` 만 `'auto'` 다. `all` 모드는
+  `'always'` 로 본다. 기본 카테고리 `generic` 은 `'always'` 로 둔다 — 미분류 레포가 모두 거기 오므로, `'auto'` 면 미분류
+  문서 레포의 개인 데이터 검사와 정규식에 없는 형식의 자격증명 검사가 함께 빠진다.
+- **왜**: 한 조직 설치본의 관측 로그에서 `secret-scanner` 는 사실상 모든 게이트에서 돌았지만 FAIL 은 드물었고, 과거 FAIL 은
+  모두 정규식(JWT·AWS 키)으로 잡히는 값이었다. 이 단계 비용은 검사 단계 가운데 적지 않은 몫이었다.
+- **검증 — 과거 입력 재생(모델 호출 없음)**: 과거 `secret-scanner` 실행의 diff 를 재구성해 새 라우팅으로 돌렸다.
+  - 과거 FAIL 은 모두 LLM 으로 넘어갔다 — 일부는 내용 패턴(JWT·AKIA·ASIA)으로, 나머지는 `env/*.yml` 경로 규칙만으로
+    (내용은 재구성되지 않았다). 경로 규칙은 빼면 안 되는 안전장치다.
+  - 과거 WARNING 은 경로 규칙으로 넘어간 것, 내용이 재구성되지 않아 판정할 수 없는 것, 빈 범위 경고(`SCAN_ERROR` 가 대신한다)로 갈렸다.
+  - 재구성 가능한 과거 통과 실행에서 코드 레포는 다수가 정규식 단계에서 끝났고, 문서 레포는 전부 그랬다.
+  - AWS 임시 키(`ASIA…`) 지적이 기존 패턴표에 없어 패턴을 더했다.
+  - 재구성 가능한 실행은 일부뿐이다(워크트리·임시 클론 삭제, 예전 분류 JSON 의 인덱스 트리 부재, 예전 프롬프트의 범위 부재) —
+    대표성은 보장되지 않는다. **측정 스크립트는 이 레포 밖이라 수치는 싣지 않는다**(관측 로그와 과거 전사를 읽는 일회성 재생 스크립트).
+- **치른 값**: 문서 레포의 개인 데이터 검사(정규식으로 못 잡는다)는 재생에서 문서 레포 실행이 전부 CLEAN 이었다 — 그런 카테고리를
+  `'auto'` 로 두면 그 검사가 사라진다. 그래서 기본값을 `'always'` 로 두고 카테고리가 고른다.
+- **이번 변경 범위에 넣지 않았다**: 선택된 lane 이 0개일 때 워크플로 없이 기록하는 단축 경로, 훅(verify)의 커밋 직전 재스캔.
+- **어디**: `secret-scan.sh`·`secret-patterns.json`(신규), `classify.sh`(선택 규칙·`secretScan`), `receipt.sh`(record 재스캔,
+  CONTRACT `secret-scan-recheck-at-record`), `preflight.js`(`secretScanBlock`), `agents/secret-scanner.md`(역할),
+  `categories/shell-tool/rules.py`(`SECRET_SCAN = 'auto'`)·`categories/generic/rules.py`(상수 없음 — always), `meta-test/engine.sh`(회귀). `ENGINE_VERSION` 2.2 → **2.3**
+  (호환되는 추가 — 새 선택 상수 둘, 프로필 계약은 그대로).

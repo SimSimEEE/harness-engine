@@ -149,7 +149,8 @@ def _vgit(vd, *a, timeout=30):
 # 소속 판정은 rules.py 의 match(ctx) 다: 근거 신호 목록을 내고, 비었으면 비소속이다. 둘 이상이면 오류다.
 # 그 밖의 규칙은 전부 선택 사항이고, 소속 카테고리에 없으면 엔진이 "카테고리 비해당" 사유로 남긴다:
 #   vault_docs(ctx, files) · ALL_MODE_FORCED · DEP_KEY_EXTRA · convention(ctx, lane) · vault_link(ctx) ·
-#   VAULT_SYNC · qa_meta(ctx) · QA_HINT{'commit','pr'} · suites(ctx, changed) · vault_dir_fallback(ctx)
+#   VAULT_SYNC · qa_meta(ctx) · QA_HINT{'commit','pr'} · suites(ctx, changed) · vault_dir_fallback(ctx) ·
+#   SECRET_SCAN('auto'|'always', 없으면 'always') · SECRET_SENSITIVE_EXTRA(민감 경로 glob 튜플 — secret-scan.sh 가 읽는다)
 # 절차 요구는 categories/<이름>/procedures.json 이다 — 조회(category 모드)가 낸다.
 # 이 판정은 category 모드(조회)와 분류가 **같은 코드**로 내린다 — 두 곳에서 갈리지 않게.
 # 카테고리 루트는 둘일 수 있다: 엔진의 categories/ 와 오버레이의 categories/(lib.sh pf_overlay_dir).
@@ -574,7 +575,49 @@ def _branch_has_pr_gate():
 selected, notSelected, meta = {}, {}, {}
 _post_pr = _branch_has_pr_gate()
 
-selected['secret-scanner'] = changed          # 어떤 경우에도 건너뛰지 않는다
+# ── 시크릿 검사: 1차 판정은 결정론 스캔(secret-scan.sh)이다. 근거는 DECISIONS.md 「시크릿 검사 결정론 우선」.
+# 카테고리 rules.py 의 SECRET_SCAN 이 'auto' 일 때만 스캔이 CLEAN 이면 secret-scanner 를 건너뛴다.
+# 상수가 없거나 'always'(또는 알 수 없는 값)면 지금처럼 늘 선택한다 — 스캔은 돌리고 결과를 기록만 한다.
+# mode=all 은 'always' 로 본다(대상이 없어도 도는 모드다). 스캔이 죽으면 SCAN_ERROR 로 보고 선택한다(도는 쪽).
+# 값은 어디에도 싣지 않는다 — 스캔 출력이 패턴 이름·파일·줄 번호뿐이다.
+# CONTRACT: secret-scan-recheck-at-record — receipt.sh record 가 같은 대상으로 다시 스캔해 status·patternsVersion 을 대조한다.
+_ss_rule = _rule('SECRET_SCAN')
+SECRET_SCAN_MODE = 'auto' if (_ss_rule == 'auto' and MODE != 'all') else 'always'
+def _secret_scan():
+    import tempfile
+    _tool = os.path.join(os.environ['SELFDIR'], 'secret-scan.sh')
+    try:
+        with tempfile.NamedTemporaryFile('wb', prefix='pf-secret-files.', delete=False) as _fh:
+            _fh.write(b''.join(f.encode('utf-8', 'surrogateescape') + b'\0' for f in changed))
+            _lst = _fh.name
+        argv = [_tool, DIR, 'pr' if MODE == 'pr' else 'commit', '--files-from', _lst]
+        if MODE == 'pr':
+            argv += ['--from', diff_from]
+        if CAT_NAME:
+            argv += ['--category', CAT_NAME]
+        try:
+            p = subprocess.run(argv, capture_output=True, timeout=120, **_DEC)
+        finally:
+            os.unlink(_lst)
+        d = json.loads(p.stdout) if p.returncode == 0 else None
+        if not (isinstance(d, dict) and d.get('status') in ('CLEAN', 'HITS', 'SENSITIVE_PATH', 'SCAN_ERROR')):
+            raise ValueError((p.stderr or '').strip()[-160:] or f'rc={p.returncode}')
+    except Exception as e:
+        d = {'status': 'SCAN_ERROR', 'reason': f'secret-scan.sh 실패 ({type(e).__name__}: {e})'[:200],
+             'patternsVersion': None, 'scannedLines': 0, 'hits': [], 'hitsTruncated': 0, 'sensitivePaths': []}
+    d['mode'] = SECRET_SCAN_MODE
+    d['tool'] = _tool
+    return d
+secret_scan = _secret_scan()
+if secret_scan['status'] == 'CLEAN' and SECRET_SCAN_MODE == 'auto':
+    notSelected['secret-scanner'] = (
+        f"secret-scan-clean — 결정론 스캔 0건(patterns v{secret_scan.get('patternsVersion')}, "
+        f"{secret_scan.get('scannedLines')}줄), 민감 경로 변경 없음")
+else:
+    selected['secret-scanner'] = changed
+    meta['secret-scanner'] = {'scan': {k: secret_scan.get(k) for k in
+                                       ('status', 'patternsVersion', 'scannedLines', 'hits', 'hitsTruncated',
+                                        'sensitivePaths', 'reason', 'mode') if secret_scan.get(k) is not None}}
 if code_files:
     logic = [f for f in code_files if logic_changed(f)]
     if not logic:
@@ -1295,6 +1338,8 @@ _payload_obj = {
     'risk': risk,
     'planAdvisory': plan_advisory,
     'claimCheck': claim_check,   # 판정에 개입하지 않는다 — preflight.js 가 참고로 보고한다
+    # 결정론 시크릿 스캔 결과(값 없음). record 가 같은 대상으로 다시 스캔해 status·patternsVersion 을 대조한다.
+    'secretScan': secret_scan,
     'limits': {
         'codeLogicChange': 'diff 의 추가·삭제 라인이 전부 주석/공백이면 로직 미변경으로 본다 (휴리스틱, 불확실하면 변경으로 판정)',
         'prBaseDiff': (

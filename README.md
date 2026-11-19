@@ -132,7 +132,7 @@ flowchart LR
 | `qa-reviewer` | opus | qa-runner 가 수행한 QA 결과를 시니어 관점에서 심사한다 |
 | `qa-runner` | sonnet | 배포된 개발(dev) 환경에 실제 요청을 보내 기능을 검증하는 QA 실행자 |
 | `requirements-tracer` | opus | change-planner 가 만든 claim 들이 실제 구현·테스트… |
-| `secret-scanner` | sonnet | 스테이징된 변경에서 시크릿·자격증명·개인 데이터 유출을 탐지한다 |
+| `secret-scanner` | sonnet | 결정론 시크릿 스캔이 걸러 넘긴 위치·민감 경로를 판정해 시크릿·자격증명… |
 | `test-runner` | haiku | 대상 레포에서 eslint(변경 파일) + tsc --noEmit + jest를 실행하고… |
 | `vault-linter` | haiku | 지식 vault(루트에 VAULT_RULES.md 가 있는 문서 레포)의 .md 변경분이… |
 | `vault-sync` | sonnet | 지식 vault 에 GitHub 연결 프로젝트로 등록된 레포가 변경됐을 때… |

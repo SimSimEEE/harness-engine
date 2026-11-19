@@ -475,7 +475,7 @@ lane 의 **보고**가 아니라 **실행 사실**을 본다 — 각 lane 이 �
 | `wiki/ projects/ outputs/ areas/` 의 `.md` (`vault` 카테고리) | `vault-linter` |
 | `@types/**`, `package.json` 의 version·의존성 | `crossrepo-impact` |
 | `@types/tsconfig.build.json` 이 전이적으로 닿는 소스 | `crossrepo-impact` |
-| 무엇이 바뀌든 | `secret-scanner` (**항상**) |
+| 무엇이 바뀌든 | `secret-scanner` — 카테고리가 `SECRET_SCAN = 'auto'` 면 결정론 스캔(`secret-scan.sh`, 패턴 정본 `secret-patterns.json`)이 `HITS`·`SENSITIVE_PATH`·`SCAN_ERROR` 일 때만 돈다(`CLEAN` 이면 `secret-scan-clean` 사유). 상수가 없거나 `'always'`, 또는 `all` 모드면 **항상**. 기록이 같은 대상을 다시 스캔해 분류와 다르면 `secret-scan-mismatch` 로 거부한다 |
 | PR 게이트 | `pr-quality`, (등록 조회 규칙이 있는 카테고리이고 vault 등록 레포면) `vault-sync` — **미등록이면 lane 이 아니라 기록 자체가 거부된다** (다른 카테고리는 등록 조회를 하지 않는다 — `vaultLink.status = NOT_APPLICABLE`) |
 | PR 게이트 + 계획 artifact 존재 | `requirements-tracer` (계획에 `how: review` 항목이 있으면 `code-reviewer` → `requirements-tracer`, `how: test` 항목이 있으면 `test-runner` → `requirements-tracer` 순차) |
 | **커밋 게이트 + `--qa`** (배포 후) | `qa-runner` → `qa-reviewer` (순차, **prod 접근 금지**). QA 의 기본 자리다 |
@@ -494,7 +494,7 @@ lane 의 **보고**가 아니라 **실행 사실**을 본다 — 각 lane 이 �
 
 위반율만 쓰면 **"이미 다들 지키는 규칙만 강제한다"** 는 편향이 생긴다 — 아무도 안 지켰지만
 지켜야 하는 규칙이 영원히 advisory 로 남는다. 실제로 이 게이트는 이미 4축을 쓰고 있었다:
-`secret-scanner` 는 위반율과 무관하게 **항상** 돈다(영향도가 재앙적이고 복구 비용이 크다).
+`secret-scanner` 는 위반율과 무관하게 돈다(영향도가 재앙적이고 복구 비용이 크다) — 결정론 스캔이 깨끗하다고 판정한 변경만 LLM 단계를 건너뛰고, 그 판정은 기록 단계가 다시 확인한다.
 명문화된 규칙이 실무보다 좁았던 것이다.
 
 기존 판정의 근거는 각 검사기 주석에 있다 — 예: base 브랜치는 위반 7.4%지만 정당한 예외
