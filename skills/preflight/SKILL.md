@@ -13,6 +13,10 @@ description: 커밋·PR 전 품질 게이트. 결정론적 분류기가 lane 을
 **무엇을 검사할지 네가 고르지 않는다.** lane 선택은 `classify.sh` 가 결정한다.
 같은 변경에 매번 같은 lane 이 도는 것이 이 구조의 전제다.
 
+**단축 경로(커밋만).** 스테이징 뒤 `$P/preflight-fast.sh <repo> commit [--msg-file=<초안>]` 한 번 — 선택된 lane 이 0개면
+분류부터 기록(`via: fast-path`)까지 끝낸다. 선택이 하나라도 있으면 기록하지 않고 exit 10 이니 아래 정식 절차를 돌린다.
+PR 게이트·`--qa`·`--review` 는 받지 않고, 커밋 자체는 하지 않는다(별도 호출). 근거는 DECISIONS.md 「빈 게이트 단축 경로」.
+
 ## 0. 순서 — QA 는 배포된 것을 검사한다
 
 ```
@@ -575,7 +579,8 @@ PR 시점에는 마일스톤 완료가 아직 참이 아니다. 그때 노트 �
 로그를 못 써도 게이트 동작은 조금도 달라지지 않는다 (메타테스트로 고정).
 
 - `event: record` / `outcome: recorded` — 통과. `required`·`recorded`·`extraLanes`·`notRun`·`waived`,
-  PR 게이트의 등록 레포면 `vaultQueue`(적재 건수 또는 미기록 건수·사유, 경고)
+  PR 게이트의 등록 레포면 `vaultQueue`(적재 건수 또는 미기록 건수·사유, 경고). 단축 경로 기록이면 `via: fast-path`
+  (record 이벤트 전부 — 거부 포함)
 - `event: record` / `outcome: refused` — 거부와 **사유**
   (`lane-status`, `index-changed`, `qa-worktree-differs`, `no-classification`,
    `branch-mismatch`·`mode-mismatch`·`stale-head`·`classify-schema-old` — 분류가 지금 대상의 것이 아님,
@@ -586,6 +591,8 @@ PR 시점에는 마일스톤 완료가 아직 참이 아니다. 그때 노트 �
    `vault-unregistered`, `plan-changed` — PR 게이트에서 결속된 계획의 claim 이 승인 뒤 바뀜,
    `secret-scan-mismatch` — 기록 단계 재스캔이 분류의 결정론 시크릿 스캔과 다르다(분류 artifact 가 바뀜),
    `secret-scan-base-moved` — PR 모드에서 분류 이후 base 브랜치가 움직여 재스캔 범위가 달라졌다,
+   `fast-path-not-empty` — 단축 경로(`via: fast-path`) 기록인데 분류의 필수 lane 이 있거나 실행 결과를 보고했다,
+   `via-unknown` — 모르는 기록 경로 표시,
    전사를 넘겼을 때만: `no-lane-evidence`·`sequence-violated`·`concealed-promotion`·`transcripts-unreadable`)
 - `event: verify` / `outcome: allowed|denied` — 훅이 실제로 무엇을 통과·차단했는가
 - `event: hook` / `outcome: bypassed` — **`PREFLIGHT_SKIP="<사유>"` 로 게이트를 우회한 사건**

@@ -319,3 +319,28 @@ a=70 a_sessions=13 b=62 main=202 home=45 norepo=78 path_outside_repo=9
   더했다. 정의 변경 전후 수치는 PR 본문에 둔다.
 - **어디**: `agents/test-runner.md` 0.6·0.7 공통 문단과 0.7, `skills/preflight/preflight.js` 회귀 명령 블록,
   `eval/fixtures/overlay-hooks-change.sh`·`eval/fixtures/overlay-hooks-regress.sh`·`eval/fixtures/_overlay/categories/eval-overlay/`, `SKILL.md` 참고 절.
+
+### 빈 게이트 단축 경로 — 선택된 lane 이 없는 커밋은 워크플로 없이 한 호출로 기록한다
+
+- **무엇**: `preflight-fast.sh <repo> commit [--msg-file=<초안>]`(신규)가 `classify.sh` 를 같은 인자로 돌리고, 필수 lane
+  (`selected` + `sequential`)이 비어 있을 때만 모든 lane 을 SKIPPED(사유는 분류의 `notSelected` 그대로)로 채워
+  `PF_RECORD_VIA=fast-path receipt.sh record commit` 을 부른다. 선택이 있으면 기록하지 않고 exit 10, 분류 실패면 그 종료코드,
+  `pr`·`all`·`--qa`·`--review`·`--body-file` 은 exit 2 로 거부한다. 사실 주장 검사가 WARN 이면 요약에 한 줄 보인다(판정 영향 없음).
+- **기록 쪽**: 단축 경로 기록도 정식 기록과 같은 절차 검사(인덱스·브랜치·모드·HEAD 결속, 시크릿 재스캔, 하네스 뷰)를 지난다.
+  전사 없이 기록하는 경로는 원래 허용돼 있었고(`required and not lanes` 조건 — 필수 lane 이 비면 걸리지 않는다), 이번에 실행으로
+  확인했다(meta-test FP-a). 추가한 것은 표시와 그 표시의 조건이다 — `via: fast-path` 가 영수증 항목·`procedure`·관측 로그
+  record 이벤트에 남고, 그 표시로 온 기록은 필수 lane 이 있거나 SKIPPED·NOT_APPLICABLE 밖의 결과를 보고하면
+  `fast-path-not-empty` 로 거부한다(CONTRACT `fast-path-requires-empty-selection`). 모르는 표시 값은 `via-unknown`.
+  표시 없이 `'{}'` 로 기록하는 기존 경로는 그대로다 — 표시는 우회를 새로 막는 장치가 아니라 단축 경로 기록을 셀 수 있게 하는
+  관측이고, 표시를 단 기록이 빈 선택이라는 것만 보장한다.
+- **훅 안내**: 커밋을 막는 deny 본문에 `<설치 루트>/skills/preflight/preflight-fast.sh <repo> commit` 을 채워 넣는다 —
+  스킬 문서를 읽지 않은 세션도 부를 수 있게. 설치 루트는 훅이 이미 쓰는 `PF_ROOT` 다.
+- **왜**: 정식 절차는 메인 세션에서 스킬 로드 → 분류 → 워크플로 → 기록 → 커밋의 턴을 밟고, 턴마다 그 세션의 컨텍스트 전체를
+  다시 읽는다. 선택된 lane 이 없는 커밋은 워크플로가 할 일이 없으므로 그 턴들이 결과를 바꾸지 않는다. 단축 경로는
+  (스테이징과 함께) 단축 호출 → 커밋의 두 호출이다. 시크릿 검사 결정론 우선(위)으로 `shell-tool` 처럼 `SECRET_SCAN = 'auto'`
+  인 카테고리에서 선택된 lane 이 없는 커밋이 생겼다. 비용 수치는 재현 명령이 이 레포에 없어 싣지 않는다.
+- **이번 범위에 넣지 않았다**: PR 게이트(`pr-quality` 가 늘 선택되어 해당 없음), `always` 카테고리(`secret-scanner` 가 늘 선택되어
+  해당 없음).
+- **어디**: `preflight-fast.sh`(신규), `receipt.sh`(`PF_RECORD_VIA`·`via`·`fast-path-not-empty`·`via-unknown`),
+  `hooks/preflight-gate.sh`(deny 안내), `SKILL.md`(맨 앞 3줄·관측 로그 사유), `meta-test/engine.sh`(FP-a~f).
+  `ENGINE_VERSION` 2.3 → **2.4**(호환되는 추가 — 새 진입점, 프로필 계약은 그대로).

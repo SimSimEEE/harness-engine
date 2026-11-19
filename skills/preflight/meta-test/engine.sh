@@ -5391,3 +5391,100 @@ grep -qF 'CONTRACT: secret-scan-recheck-at-record' "$HOME/.claude/skills/preflig
   && grep -qF 'CONTRACT: secret-scan-prompt-has-no-values' "$HOME/.claude/skills/preflight/preflight.js" \
   && ok "SS: 기록 재스캔·프롬프트 계약 주석이 있다" || ng "SS: 계약 주석이 없다" "secret-scan-recheck-at-record · secret-scan-prompt-has-no-values"
 # END secret-scan-routing
+
+# BEGIN fast-path — 빈 게이트 단축 경로(DECISIONS.md 2026-11-19 「빈 게이트 단축 경로」)
+echo "== 빈 게이트 단축 경로 (preflight-fast.sh) =="
+FPX="$HOME/.claude/skills/preflight/preflight-fast.sh"
+FPD="$T/fastpath"; rm -rf "$FPD"; mkdir -p "$FPD"
+# 실행 결과: 종료코드는 FPRC, 출력은 $T/fp.out, 관측 로그는 $T/fp.jsonl(실행마다 비운다)
+fprun(){ rm -f "$T/fp.jsonl"; PF_LOG="$T/fp.jsonl" "$FPX" "$@" > "$T/fp.out" 2>&1; FPRC=$?; }
+fprcpt(){ local f; f="$(git -C "$1" rev-parse --absolute-git-dir)/claude-preflight.json"; [ -f "$f" ] && echo "$f"; }
+# 관측 로그의 마지막 record 이벤트 (outcome, reason, via)
+fplog(){ python3 -c 'import json,sys
+L=[json.loads(l) for l in open(sys.argv[1]) if l.strip()] if __import__("os").path.exists(sys.argv[1]) else []
+r=[e for e in L if e.get("event")=="record"]
+print((r[-1].get("outcome"), r[-1].get("reason"), r[-1].get("via")) if r else ("none", None, None))' "$T/fp.jsonl" 2>"$T/py.err"; _pytb "$1"; }
+
+# (a) 선택 0개(shell-tool auto + 깨끗한 변경) → 한 호출로 기록, 훅이 커밋을 허용
+ssrepo "$FPD/a"; printf 'more\n' >> "$FPD/a/a.txt"; git -C "$FPD/a" add a.txt
+fprun "$FPD/a" commit
+[ "$FPRC" = 0 ] && [ "$(fplog $LINENO)" = "('recorded', None, 'fast-path')" ] \
+  && ok "FP-a: 선택 0개 → preflight-fast.sh 가 기록한다 (exit 0, 로그 via fast-path)" \
+  || ng "FP-a: 선택 0개인데 기록되지 않았다 (rc=$FPRC $(tail -3 "$T/fp.out" | tr '\n' ' '))" "rc=0 recorded via fast-path"
+[ "$(ssj "$(fprcpt "$FPD/a")" '(e:=d["branches"]["main"]["commit"]).get("via"), e["procedure"].get("via"), sorted({(v["status"] if isinstance(v, dict) else v) for v in e["lanes"].values()}), all(e["lanes"][k]["reason"] == r for k, r in e["classification"]["notSelected"].items())' $LINENO)" \
+   = "fast-path fast-path ['SKIPPED'] True" ] \
+  && ok "FP-a: 영수증에 via fast-path, lane 은 전부 SKIPPED 이고 사유는 분류의 notSelected 그대로" \
+  || ng "FP-a: 영수증 형태가 어긋난다" "fast-path fast-path ['SKIPPED'] True"
+( repo="$FPD/a"; hv "git -C $FPD/a $G -m x" allow ) \
+  && ok "FP-a: 단축 경로 기록 뒤 훅이 그 커밋을 허용한다" || ng "FP-a: 단축 경로 기록이 훅 verify 를 통과하지 못한다 [$(repo="$FPD/a"; pv "git -C $FPD/a $G -m x")]" "allow"
+# 레포 경로는 git 이 푼 최상위다(macOS 는 /var → /private/var) — 같은 디렉터리인지는 -ef 로 본다
+_fpn=$(sed -n "s/^이제 \`git -C '\(.*\)' commit\` 을 별도 Bash 호출로.*/\1/p" "$T/fp.out")
+[ -n "$_fpn" ] && [ "$_fpn" -ef "$FPD/a" ] \
+  && ok "FP-a: 출력이 다음 명령(\`git -C <repo> commit\`, 별도 호출)을 알려 준다" || ng "FP-a: 다음 명령 안내가 없다 [$_fpn]" "git -C $FPD/a commit"
+
+# (b) 선택 있음 → 기록 안 함 · exit 10 · 영수증 없음
+ssrepo "$FPD/b"; printf 'echo x\n' >> "$FPD/b/skills/preflight/meta-test.sh"; git -C "$FPD/b" add -A
+fprun "$FPD/b" commit
+[ "$FPRC" = 10 ] && [ -z "$(fprcpt "$FPD/b")" ] && [ "$(fplog $LINENO)" = "('none', None, None)" ] \
+  && grep -qF '선택된 lane: test-runner' "$T/fp.out" \
+  && ok "FP-b: 선택된 lane 이 있으면 기록하지 않고 exit 10, 그 lane 을 알려 준다" \
+  || ng "FP-b: 선택이 있는데 단축 경로가 기록했거나 종료코드가 다르다 (rc=$FPRC receipt=$(fprcpt "$FPD/b"))" "rc=10 영수증 없음 test-runner"
+
+# (c) pr·all 모드와 --review·--qa 는 거부 — 분류도 기록도 하지 않는다
+ssrepo "$FPD/c"; printf 'more\n' >> "$FPD/c/a.txt"; git -C "$FPD/c" add a.txt
+_fpc=""; for _a in "pr" "all" "commit --review" "commit --qa"; do
+  # shellcheck disable=SC2086
+  fprun "$FPD/c" $_a
+  # 사유도 본다 — 모르는 플래그 거부(exit 2)로 떨어져도 종료코드는 같다
+  [ "$FPRC" = 2 ] && grep -qF '단축 경로는' "$T/fp.out" || _fpc="$_fpc [$_a rc=$FPRC $(head -1 "$T/fp.out")]"
+done
+[ -z "$_fpc" ] && [ -z "$(fprcpt "$FPD/c")" ] && [ ! -e "$(git -C "$FPD/c" rev-parse --absolute-git-dir)/claude-preflight.classify.json" ] \
+  && ok "FP-c: pr·all·--review·--qa 는 사유와 함께 exit 2 로 거부되고 분류·영수증이 생기지 않는다" \
+  || ng "FP-c: 받지 않아야 할 인자를 받았다$_fpc" "전부 rc=2, 분류·영수증 없음"
+
+# (d) fast-path 표시 위조 — 선택이 있는 분류로 via fast-path 기록 → fast-path-not-empty 거부(같은 입력의 정식 기록은 통과)
+"$CL" "$FPD/b" commit > "$FPD/b.cls.json" 2>"$T/fp-cl.err"
+"$CL" "$FPD/c" commit > "$FPD/c.cls.json" 2>"$T/fp-cl.err"   # 선택 0개 분류 (아래 PASS 보고 위조용)
+[ "$(PF_RECORD_VIA=fast-path ssrec "$FPD/b" commit '{"test-runner":"PASS"}')" = "('refused', 'fast-path-not-empty')" ] \
+  && [ -z "$(fprcpt "$FPD/b")" ] \
+  && ok "FP-d: 선택 있는 분류를 via fast-path 로 기록하면 fast-path-not-empty 로 거부" \
+  || ng "FP-d: 단축 경로 표시로 선택 있는 분류가 기록됐다 ($(cat "$T/ss-rec.out"))" "refused fast-path-not-empty"
+[ "$(PF_RECORD_VIA=fast-path ssrec "$FPD/b" commit '{"test-runner":{"status":"SKIPPED","reason":"x"}}')" = "('refused', 'fast-path-not-empty')" ] \
+  && ok "FP-d: 선택된 lane 을 SKIPPED 로 채워 넣어도 via fast-path 면 거부" \
+  || ng "FP-d: SKIPPED 로 채운 위조가 기록됐다 ($(cat "$T/ss-rec.out"))" "refused fast-path-not-empty"
+[ "$(PF_RECORD_VIA=fast-path ssrec "$FPD/c" commit '{"code-reviewer":"PASS"}')" = "('refused', 'fast-path-not-empty')" ] \
+  && ok "FP-d: 선택 0개 분류라도 via fast-path 로 PASS(실행한 결과)를 보고하면 거부" \
+  || ng "FP-d: 워크플로 없는 PASS 보고가 기록됐다 ($(cat "$T/ss-rec.out"))" "refused fast-path-not-empty"
+[ "$(PF_RECORD_VIA=bogus ssrec "$FPD/c" commit '{}')" = "('refused', 'via-unknown')" ] \
+  && ok "FP-d: 모르는 기록 경로 표시는 거부" || ng "FP-d: 모르는 via 값이 받아졌다 ($(cat "$T/ss-rec.out"))" "refused via-unknown"
+[ "$(ssrec "$FPD/b" commit '{"test-runner":"PASS"}')" = "('recorded', None)" ] \
+  && ok "FP-d: 대조 — 같은 분류의 정식 기록(via 없음)은 통과한다" || ng "FP-d: 정식 기록이 거부된다 ($(cat "$T/ss-rec.out"))" "recorded"
+
+# (e) classify.sh 가 실패하면 그 종료코드로 끝나고 아무것도 기록하지 않는다 — 카테고리 선언 결손(exit 3)
+FPO="$FPD/overlay"; mkdir -p "$FPO/categories"; printf '{"categories": ["fp-missing"]}\n' > "$FPO/categories/categories.json"
+ssrepo "$FPD/e"; printf 'more\n' >> "$FPD/e/a.txt"; git -C "$FPD/e" add a.txt
+PF_OVERLAY_DIR="$FPO" fprun "$FPD/e" commit
+[ "$FPRC" = 3 ] && [ -z "$(fprcpt "$FPD/e")" ] && [ "$(fplog $LINENO)" = "('none', None, None)" ] \
+  && ok "FP-e: classify.sh 실패(exit 3) → 같은 코드로 끝나고 기록이 없다" \
+  || ng "FP-e: 분류 실패인데 종료코드가 다르거나 기록이 생겼다 (rc=$FPRC $(tail -2 "$T/fp.out" | tr '\n' ' '))" "rc=3 영수증 없음"
+
+# (f) 영수증이 없어 커밋을 막는 deny 본문에 단축 경로 명령(설치 경로·레포를 채운)이 있다
+ssrepo "$FPD/f"; printf 'more\n' >> "$FPD/f/a.txt"; git -C "$FPD/f" add a.txt
+python3 -c 'import json,sys; print(json.dumps({"tool_name":"Bash","cwd":sys.argv[1],"tool_input":{"command":"git -C "+sys.argv[1]+" "+sys.argv[2]+" -m x"}}))' "$FPD/f" "$G" > "$T/fp-hook.in"
+"$H" < "$T/fp-hook.in" > "$T/fp-hook.out" 2>"$T/py.err"  # py-err-front
+# 본문의 `<경로>/preflight-fast.sh <repo> commit` 을 뽑아 설치본의 그 파일·그 레포와 같은지(-ef) 본다 — 경로 표기(이중 슬래시·심링크)는 다를 수 있다
+python3 - "$T/fp-hook.out" <<'FPH' > "$T/fp-hook.cmd" 2>>"$T/py.err"
+import json, re, sys
+r = json.load(open(sys.argv[1]))['hookSpecificOutput']
+m = re.search(r"`'([^'`]+/skills/preflight/preflight-fast\.sh)' '([^'`]+)' commit`", r['permissionDecisionReason'])
+ok = r['permissionDecision'] == 'deny' and '게이트 실행 기록 없음' in r['permissionDecisionReason'] and m
+print(f"{m.group(1)}\n{m.group(2)}" if ok else '')
+FPH
+_fpx=$(sed -n 1p "$T/fp-hook.cmd"); _fpr=$(sed -n 2p "$T/fp-hook.cmd")
+[ -n "$_fpx" ] && [ "$_fpx" -ef "$FPX" ] && [ -x "$_fpx" ] && [ "$_fpr" -ef "$FPD/f" ]
+[ $? = 0 ] \
+  && ok "FP-f: 영수증 없는 커밋 deny 본문이 실제 설치 경로의 \`preflight-fast.sh <repo> commit\` 을 알려 준다" \
+  || ng "FP-f: deny 본문에 단축 경로 안내가 없다$(_diag "$T/py.err")" "$FPX $FPD/f commit"
+grep -qF 'CONTRACT: fast-path-requires-empty-selection' "$HOME/.claude/skills/preflight/receipt.sh" \
+  && ok "FP: 단축 경로 기록 계약 주석이 있다" || ng "FP: 계약 주석이 없다" "fast-path-requires-empty-selection"
+# END fast-path

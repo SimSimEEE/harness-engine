@@ -337,6 +337,8 @@ fi
 
 if [ "$kind" = "commit" ]; then
     hint="/preflight 를 먼저 실행해서 게이트를 통과시켜라. 사소한 변경이라 게이트가 불필요하다고 판단되면 사용자에게 확인받고 \`PREFLIGHT_SKIP=\"<사유>\"\` 를 명령 앞에 붙여 다시 시도한다 (4자 이상. \`=1\` 은 거부된다)."
+    # 단축 경로 안내 — 스킬 문서를 읽지 않아도 부를 수 있게 설치 경로·레포를 채운 명령을 준다(DECISIONS.md 「빈 게이트 단축 경로」).
+    hint="$hint 선택된 검사가 없는 변경이면 \`'$PF_ROOT/skills/preflight/preflight-fast.sh' '$dir' commit\` 한 번으로 기록된다(선택된 검사가 있으면 기록하지 않고 exit 10 으로 알려 준다)."
 else
     hint="/preflight pr 을 먼저 실행해서 게이트를 통과시켜라. 우회가 필요하면 사용자 확인 후 \`PREFLIGHT_SKIP=\"<사유>\"\` 를 붙인다 (4자 이상. \`=1\` 은 거부된다)."
 fi

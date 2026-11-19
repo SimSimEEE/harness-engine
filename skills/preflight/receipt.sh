@@ -12,6 +12,7 @@
 #     게이트 결과 기록 (스테이징 후). transcripts-dir 을 넘기면 전사 기반 검사 셋이 켜진다
 #     (no-lane-evidence · concealed-promotion · sequence-violated). 넘겼는데 못 읽으면 거부한다.
 #     classify 를 생략하면 <gitdir>/claude-preflight.classify.json 을 자동으로 읽는다.
+#     PF_RECORD_VIA=fast-path 는 preflight-fast.sh 의 단축 경로 기록 표시다 — 필수 lane 이 빈 분류만 받는다.
 #   receipt.sh verify commit|pr <dir>                검증 (exit 0 통과, 1 차단)
 #   receipt.sh report pr <dir> [branch]              머지 보고 — 계획 claim 닫힘 · QA 상태 (판정하지 않는다)
 #
@@ -73,7 +74,7 @@ record)
     engver=$(pf_engine_version)
     KIND="$kind" OKMODES="$(pf_ok_modes "$kind")" IT="$it" HEAD_SHA="$head" BRANCH="$branch" TS="$ts" R="$receipt" \
     LANES="$lanes" CLASSIFY="$classify" PLANJSON="$planjson" PLANQA="$planqa" PLANCLAIMS="$planclaims" COMMON_DIR="$common_dir" DIR="$dir" REPO_TOP="$repo_top" TRANSCRIPTS="$transcripts" ENGINE_VER="$engver" \
-    SECRET_SCAN_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/secret-scan.sh" \
+    VIA="${PF_RECORD_VIA:-}" SECRET_SCAN_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/secret-scan.sh" \
     PF_CATS="$(pf_category_roots)" python3 - <<'PY'
 import json, os, re, subprocess, sys
 
@@ -101,6 +102,8 @@ def _log(event, outcome, **kw):
         rec = {'ts': int(os.environ.get('TS') or 0), 'event': event, 'outcome': outcome,
                'kind': os.environ.get('KIND'), 'repo': os.environ.get('REPO_TOP') or os.environ.get('DIR'),
                'branch': os.environ.get('BRANCH'), 'engineVersion': os.environ.get('ENGINE_VER') or None}
+        if os.environ.get('VIA'):
+            rec['via'] = os.environ['VIA']
         rec.update(kw)
         path = os.path.expanduser(os.environ.get('PF_LOG') or '~/.claude/preflight-log.jsonl')
         with open(path, 'a') as f:
@@ -110,6 +113,16 @@ def _log(event, outcome, **kw):
 
 lanes = _parse('LANES')
 classify = _parse('CLASSIFY')
+
+# CONTRACT: fast-path-requires-empty-selection
+# 기록 경로 표시. 비면 정식 절차(워크플로 결과를 넘기는 기록)이고, `fast-path` 는 preflight-fast.sh 가 워크플로 없이
+# 남긴 기록이다. 표시는 영수증·관측 로그에 `via` 로 남는다. 표시만으로 검사가 줄지 않는다 — 아래 절차 검사를 그대로
+# 지나고, 분류의 필수 lane 이 비어 있지 않거나 SKIPPED·NOT_APPLICABLE 밖의 결과를 보고하면 거부한다(fast-path-not-empty).
+VIA = os.environ.get('VIA') or ''
+if VIA not in ('', 'fast-path'):
+    print(f"게이트 기록 거부 — 모르는 기록 경로 표시: {VIA!r} (받는 값: fast-path)")
+    _log('record', 'refused', reason='via-unknown')
+    sys.exit(2)
 
 OK = {'PASS', 'SKIPPED', 'NOT_APPLICABLE'}
 bad = []
@@ -421,6 +434,16 @@ missing = [l for l in required if l not in lanes]
 # 실측(2026-09-11): record 거부 18건 중 incomplete-lanes 5건, **5건 전부** missing==required.
 # 가르는 근거는 그 **형태**다 — 전무 아니면 전부이고 부분 누락이 0건이다.
 # 재현: preflight-log.jsonl 에서 event=record·outcome=refused 를 reason 별로 센다.
+if VIA == 'fast-path':
+    _fp_ran = sorted(l for l, v in lanes.items()
+                     if (v.get('status') if isinstance(v, dict) else v) not in ('SKIPPED', 'NOT_APPLICABLE'))
+    if required or _fp_ran:
+        print("게이트 기록 거부 — 단축 경로(fast-path)는 선택된 lane 이 없는 분류만 기록한다")
+        if required: print(f"  분류가 요구한 lane: {', '.join(sorted(required))}")
+        if _fp_ran: print(f"  워크플로 없이 보고된 결과: {', '.join(_fp_ran)}")
+        print("  정식 절차(classify.sh → preflight.js(Workflow) → record)를 돌려라.")
+        _log('record', 'refused', reason='fast-path-not-empty', required=sorted(required), reported=_fp_ran)
+        sys.exit(1)
 if required and not lanes:
     print("게이트 기록 거부 — 검사를 돌리지 않았다. lane 결과가 하나도 없다.")
     print(f"  분류가 요구한 lane: {', '.join(sorted(required))}")
@@ -855,8 +878,12 @@ procedure = {
     'complete': True,
     'limits': ('출력 내용의 정당성은 검증하지 않는다 (실행 사실·순서·판정 승격까지만)'
                if tdir else
+               '선택된 lane 이 없어 워크플로를 돌리지 않았다 (단축 경로) — 실행할 검사가 없었다'
+               if VIA == 'fast-path' else
                '전사를 넘기지 않아 실행 사실·순서·판정 승격이 검증되지 않았다 — lane 존재 여부만 봤다'),
 }
+if VIA:
+    procedure['via'] = VIA
 
 def _plan():
     # 실패를 NONE 으로 바꾸지 않는다 — 결속된 계획이 "없음" 으로 기록되면 역추적이 끊긴다.
@@ -935,6 +962,8 @@ data['branches'].setdefault(os.environ['BRANCH'], {})[os.environ['KIND']] = {
     'ts': int(os.environ['TS']),
     # 이 기록을 만든 엔진 (lib.sh pf_engine_version). 못 읽으면 null — 판정에 쓰지 않는다.
     'engineVersion': os.environ.get('ENGINE_VER') or None,
+    # 기록 경로 — 단축 경로(preflight-fast.sh)면 'fast-path', 정식 절차면 키가 없다.
+    **({'via': VIA} if VIA else {}),
     'lanes': lanes,
     'classification': classify,   # 어떤 근거로 이 lane 들을 골랐는가
     'procedure': procedure,       # 그 근거가 요구한 절차를 실제로 밟았는가
@@ -1097,7 +1126,8 @@ _p = _plan()
 print(f"recorded: {os.environ['KIND']} gate — indexTree {os.environ['IT'][:8]}"
       + (f" · plan {_p.get('planId') or _p['status']}" if _p['status'] != 'NONE' else " · plan 없음")
       + (f" · lanes {len(lanes)}개" if lanes else " · lanes 미기록(권장하지 않음)")
-      + (f" · 미실행 {', '.join(skipped)}" if skipped else ""))
+      + (" · via fast-path (선택된 lane 없음)" if VIA == 'fast-path' else
+         f" · 미실행 {', '.join(skipped)}" if skipped else ""))
 if vq:
     _REASON = {'lock-timeout': None, 'io-error': '대기 목록에 쓰지 못했다', 'no-transcripts': '전사를 넘기지 않아 드리프트를 읽지 못했다',
                'no-drifts-output': '전사의 vault-sync 출력에 drifts 가 없다'}
