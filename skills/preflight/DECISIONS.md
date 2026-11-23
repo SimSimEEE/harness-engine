@@ -344,3 +344,9 @@ a=70 a_sessions=13 b=62 main=202 home=45 norepo=78 path_outside_repo=9
 - **어디**: `preflight-fast.sh`(신규), `receipt.sh`(`PF_RECORD_VIA`·`via`·`fast-path-not-empty`·`via-unknown`),
   `hooks/preflight-gate.sh`(deny 안내), `SKILL.md`(맨 앞 3줄·관측 로그 사유), `meta-test/engine.sh`(FP-a~f).
   `ENGINE_VERSION` 2.3 → **2.4**(호환되는 추가 — 새 진입점, 프로필 계약은 그대로).
+
+## 2026-11-23
+
+### 기록 단계가 시크릿 검사 모드를 다시 구한다
+
+- `receipt.sh record` 가 재스캔(`secret-scan.sh --category <선언 카테고리>`, 루트는 `classify.sh` 와 같은 엔진·오버레이 순서)의 `categoryMode` 로 모드를 다시 구하고(`all` 분류는 always), always 인데 `secret-scanner` 결과가 없거나 SKIPPED·NOT_APPLICABLE 이면, 또는 분류의 `secretScan.mode` 와 다르면 `secret-scan-mode-mismatch` 로 거부한다(백로그 「record 단계가 카테고리의 `SECRET_SCAN` 을 다시 계산하지 않는다」). 한계: 카테고리 **이름**을 위조하면(always 카테고리를 auto 카테고리 이름으로) 그 이름의 규칙으로 구하므로 통과한다 — 소속 재판정은 하지 않았다. 호환 수정이라 `ENGINE_VERSION` 은 그대로. 어디: `secret-scan.sh`(`categoryMode`), `receipt.sh`(CONTRACT `secret-scan-recheck-at-record` (c)), `classify.sh`·`secret-scan.sh`(CONTRACT `secret-scan-mode-rule`), `SKILL.md`, `meta-test/engine.sh`(SS-o).

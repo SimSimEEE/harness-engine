@@ -21,9 +21,16 @@ for st in FAIL ERROR TIMEOUT; do
   else ok "$st → 기록 거부"; fi
 done
 reclassify
-for st in PASS SKIPPED NOT_APPLICABLE; do
-  if "$R" record commit "$repo" "{\"$LANE\":\"$st\"}" >/dev/null 2>&1
-  then ok "$st → 기록 허용"; else ng "$st 를 거부함" "허용되어야 한다"; fi
+if "$R" record commit "$repo" "{\"$LANE\":\"PASS\"}" >/dev/null 2>&1
+then ok "PASS → 기록 허용"; else ng "PASS 를 거부함" "허용되어야 한다"; fi
+# 선택된 lane 의 SKIPPED·NOT_APPLICABLE 은 허용 상태다. 공용 픽스처의 lane($LANE=secret-scanner)은 카테고리가 always 라
+# 기록 단계가 결과를 요구하므로(secret-scan-mode-mismatch, SS-o) 다른 lane 으로 본다 — .js 변경이면 test-runner 가 선택된다.
+_fcj="$T/fc-js"; mkdir -p "$_fcj"; git -C "$_fcj" init -q -b main; git -C "$_fcj" config user.email t@t; git -C "$_fcj" config user.name t
+echo one > "$_fcj/a.txt"; git -C "$_fcj" add -A; git -C "$_fcj" "$G" -qm init
+echo 'module.exports = 1;' > "$_fcj/x.js"; git -C "$_fcj" add -A; "$CL" "$_fcj" "$G" >/dev/null 2>&1
+for st in SKIPPED NOT_APPLICABLE; do
+  if "$R" record commit "$_fcj" "{\"$LANE\":\"PASS\",\"test-runner\":\"$st\"}" >/dev/null 2>&1
+  then ok "$st → 기록 허용 (선택된 test-runner)"; else ng "$st 를 거부함" "허용되어야 한다"; fi
 done
 
 echo "== receipt: 신뢰 경계 (검사한 상태 ≠ 커밋될 상태) =="
@@ -1361,12 +1368,30 @@ O=$(PF_LOG="$T/w2.log" "$R" record commit "$WT" \
 case "$O" in *recorded:*) ok "제대로 붙인 waiver 는 통과한다";; *) ng "정당한 승인을 거부했다" "recorded";; esac
 # 통제가 걸리는 집합은 **기록된 lane 전체**다. dict+PASS 한 갈래만 막으면 나머지로 빠져나간다 —
 # 문자열 형태는 usage 에 적힌 정본 입력이고, SKIPPED/NOT_APPLICABLE 도 허용 상태다.
-for FORM in '{"secret-scanner":"PASS"}' \
-            '{"secret-scanner":{"status":"SKIPPED"}}' \
-            '{"secret-scanner":{"status":"NOT_APPLICABLE"}}'; do
-  O=$(PF_LOG="$T/w3.log" "$R" record commit "$WT" "$FORM" "" "$WD" 2>&1 || true)
+O=$(PF_LOG="$T/w3.log" "$R" record commit "$WT" '{"secret-scanner":"PASS"}' "" "$WD" 2>&1 || true)
+case "$O" in *"승인 흔적 없이"*) ok "승격 우회 차단: {\"secret-scanner\":\"PASS\"}";;
+  *) ng "이 형태로 승인 없이 통과한다: {\"secret-scanner\":\"PASS\"}" "concealed-promotion";; esac
+# SKIPPED·NOT_APPLICABLE 형태는 secret-scanner 가 아닌 lane 으로 본다 — 이 픽스처(generic)는 always 카테고리라
+# secret-scanner 의 SKIPPED·NOT_APPLICABLE 은 전사 검사 전에 secret-scan-mode-mismatch 로 거부된다(SS-o).
+# .js 변경 픽스처에서 test-runner 가 전사에 WARNING 을 냈는데 SKIPPED·NOT_APPLICABLE 로 기록하면 concealed-promotion 이다.
+WJ="$T/waive-js"; mkdir -p "$WJ"
+git init -q -b main "$WJ"; git -C "$WJ" config user.email t@t; git -C "$WJ" config user.name t
+echo x > "$WJ/a.txt"; git -C "$WJ" add -A; git -C "$WJ" "$G" -qm init
+echo 'module.exports = 1;' > "$WJ/x.js"; git -C "$WJ" add -A
+VAULT_DIR="$T/vault" "$CL" "$WJ" commit >/dev/null 2>&1
+WJD="$T/waive-js-tr"; mkdir -p "$WJD"
+python3 - "$WJD" <<'ZP'
+import json,sys,os
+for name, lane, verdict in (('agent-a', 'test-runner', 'WARNING'), ('agent-b', 'secret-scanner', 'PASS')):
+    rows=[{"timestamp":"2026-09-10T09:00:00Z","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"echo x"}}]}},
+          {"timestamp":"2026-09-10T09:01:00Z","message":{"content":[{"type":"tool_use","name":"StructuredOutput","input":{"lane":lane,"verdict":verdict}}]}}]
+    open(os.path.join(sys.argv[1], name + '.jsonl'),'w').write('\n'.join(json.dumps(r) for r in rows))
+ZP
+for FORM in '{"secret-scanner":"PASS","test-runner":{"status":"SKIPPED"}}' \
+            '{"secret-scanner":"PASS","test-runner":{"status":"NOT_APPLICABLE"}}'; do
+  O=$(PF_LOG="$T/w3.log" "$R" record commit "$WJ" "$FORM" "" "$WJD" 2>&1 || true)
   case "$O" in *"승인 흔적 없이"*) ok "승격 우회 차단: $FORM";;
-    *) ng "이 형태로 승인 없이 통과한다: $FORM" "concealed-promotion";; esac
+    *) ng "이 형태로 승인 없이 통과한다: $FORM ($O)" "concealed-promotion";; esac
 done
 # verdict=PASS 라도 blocking findings 가 있으면 워크플로 상태는 FAIL 이다
 BD="$T/waive-blk"; mkdir -p "$BD"
@@ -5385,11 +5410,94 @@ else
   ng "SS-j: 가짜 런타임($T/stub-run.cjs)이 없어 프롬프트를 볼 수 없다" "stub-run.cjs"
 fi
 
+# (o) 기록 단계가 모드를 다시 구한다 — 선언 카테고리의 rules.py(엔진·오버레이 루트)로 SECRET_SCAN 을 다시 읽고, all 분류는 always.
+#     always 인데 secret-scanner 결과가 없거나, 분류의 secretScan.mode 가 다시 구한 모드와 다르면 secret-scan-mode-mismatch.
+#     위조는 secretScan.status 를 건드리지 않는다 — 재스캔 status 대조(SS-e)로는 잡히지 않는 경우만 본다.
+ssmforge(){ python3 - "$1" "$2" "$3" <<'PYF' 2>"$T/py.err"
+import json, sys
+src, dst, how = sys.argv[1:]
+d = json.load(open(src))
+if 'drop' in how.split('+'):
+    d['selected'].pop('secret-scanner', None); d['laneMeta'].pop('secret-scanner', None)
+    d['notSelected']['secret-scanner'] = 'secret-scan-clean — 위조'
+for m in ('auto', 'always'):
+    if m in how.split('+'):
+        d['secretScan']['mode'] = m
+json.dump(d, open(dst, 'w'))
+PYF
+}
+# 기록 입력: 분류의 필수 lane(selected + sequential) 전부 PASS, 첫 인자 lane 은 뺀다(빈 문자열이면 다 넣는다)
+sslanes(){ python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); r=list(d["selected"]); [r.extend(l for l in c if l not in r) for c in d.get("sequential") or []]; print(json.dumps({l: "PASS" for l in r if l != sys.argv[2]}))' "$1" "$2" 2>"$T/py.err"; }
+_ssg0="$(git -C "$SSD/a0" rev-parse --absolute-git-dir)/claude-preflight.classify.json"
+"$CL" "$SSD/a0" commit > /dev/null 2>"$T/ss-cl.err"; cp "$_ssg0" "$SSD/a0.honest.json"
+[ "$(ssj "$SSD/a0.honest.json" 'd["category"], d["secretScan"]["status"], d["secretScan"]["mode"], "secret-scanner" in d["selected"]' $LINENO)" = "generic CLEAN always True" ] \
+  || ng "SS-o: 전제 — generic 레포의 정직한 분류가 always·CLEAN·선택이 아니다$(_diag "$T/ss-cl.err")" "generic CLEAN always True"
+# (o-a) 백로그 재현 — always(generic) + 깨끗한 변경에서 selected 의 secret-scanner 만 지우고 secretScan 은 그대로 둔다
+ssmforge "$SSD/a0.honest.json" "$SSD/a0.m1.json" drop
+[ "$(ssrec "$SSD/a0" commit '{}' "$SSD/a0.m1.json")" = "('refused', 'secret-scan-mode-mismatch')" ] \
+  && ok "SS-o: always 카테고리 분류에서 secret-scanner 만 뺀 artifact(재스캔 CLEAN 일치) → secret-scan-mode-mismatch 로 거부" \
+  || ng "SS-o: always 카테고리에서 secret-scanner 없이 기록됐다 ($(cat "$T/ss-rec.out"))" "refused secret-scan-mode-mismatch"
+grep -q '"recomputedMode": *"always"' "$T/ss-rec.jsonl" && grep -q '"category": *"generic"' "$T/ss-rec.jsonl" \
+  && ok "SS-o: 모드 거부가 관측 로그에 카테고리·다시 구한 모드와 함께 남는다" || ng "SS-o: 모드 거부 로그가 없다" "category=generic recomputedMode=always"
+# SKIPPED 로 보고해도 같다(선택을 지우지 않고 lane 결과만 SKIPPED)
+[ "$(ssrec "$SSD/a0" commit '{"secret-scanner":{"status":"SKIPPED","reason":"x"}}' "$SSD/a0.honest.json")" = "('refused', 'secret-scan-mode-mismatch')" ] \
+  && ok "SS-o: always 카테고리에서 secret-scanner 를 SKIPPED 로 보고 → 거부 (재스캔 CLEAN 이어도)" \
+  || ng "SS-o: always 카테고리의 SKIPPED 보고로 기록됐다 ($(cat "$T/ss-rec.out"))" "refused secret-scan-mode-mismatch"
+# 오버레이 카테고리도 같은 루트로 읽는다 — SS-d 의 always 오버레이 픽스처(d 는 지금 CLEAN 분류)
+_ssgd="$(git -C "$SSD/d" rev-parse --absolute-git-dir)/claude-preflight.classify.json"
+PF_OVERLAY_DIR="$SSO" "$CL" "$SSD/d" commit > /dev/null 2>"$T/ss-cl.err"; cp "$_ssgd" "$SSD/d.honest.json"
+ssmforge "$SSD/d.honest.json" "$SSD/d.m1.json" drop
+[ "$(PF_OVERLAY_DIR="$SSO" ssrec "$SSD/d" commit '{}' "$SSD/d.m1.json")" = "('refused', 'secret-scan-mode-mismatch')" ] \
+  && ok "SS-o: 오버레이 always 카테고리(ss-always)에서도 secret-scanner 를 뺀 artifact 를 거부한다" \
+  || ng "SS-o: 오버레이 카테고리의 모드를 다시 구하지 못했다 ($(cat "$T/ss-rec.out"))" "refused secret-scan-mode-mismatch"
+# (o-b) 정직한 always 기록은 통과 — 엔진 카테고리·오버레이 카테고리
+[ "$(ssrec "$SSD/a0" commit '{"secret-scanner":"PASS"}' "$SSD/a0.honest.json")" = "('recorded', None)" ] \
+  && ok "SS-o: 정직한 always(generic) 분류 + secret-scanner PASS 는 기록된다" || ng "SS-o: 정직한 always 기록이 거부된다 ($(cat "$T/ss-rec.out"))" "recorded"
+[ "$(PF_OVERLAY_DIR="$SSO" ssrec "$SSD/d" commit '{"secret-scanner":"PASS"}' "$SSD/d.honest.json")" = "('recorded', None)" ] \
+  && ok "SS-o: 정직한 always(오버레이) 분류 + secret-scanner PASS 는 기록된다" || ng "SS-o: 오버레이 정직한 기록이 거부된다 ($(cat "$T/ss-rec.out"))" "recorded"
+# (o-c) 정직한 auto + CLEAN(미선택)은 lane 없이 기록된다
+_ssga="$(git -C "$SSD/a" rev-parse --absolute-git-dir)/claude-preflight.classify.json"
+"$CL" "$SSD/a" commit > /dev/null 2>"$T/ss-cl.err"; cp "$_ssga" "$SSD/a.honest.json"
+[ "$(ssj "$SSD/a.honest.json" 'd["secretScan"]["mode"], "secret-scanner" in d["selected"]' $LINENO)" = "auto False" ] \
+  && [ "$(ssrec "$SSD/a" commit '{}' "$SSD/a.honest.json")" = "('recorded', None)" ] \
+  && ok "SS-o: 정직한 auto(shell-tool) + CLEAN 미선택 분류는 lane 없이 기록된다" || ng "SS-o: 정직한 auto 기록이 거부된다 ($(cat "$T/ss-rec.out"))" "auto False · recorded"
+# (o-d) secretScan.mode 위조 — always 카테고리를 auto 로 적고 lane 을 빼도, lane 을 남겨도 거부. auto 카테고리를 always 로 적어도 거부
+ssmforge "$SSD/a0.honest.json" "$SSD/a0.m2.json" drop+auto
+[ "$(ssrec "$SSD/a0" commit '{}' "$SSD/a0.m2.json")" = "('refused', 'secret-scan-mode-mismatch')" ] \
+  && ok "SS-o: always 카테고리 분류의 secretScan.mode 를 auto 로 바꾸고 secret-scanner 를 빼면 거부" \
+  || ng "SS-o: mode 를 auto 로 위조해 기록됐다 ($(cat "$T/ss-rec.out"))" "refused secret-scan-mode-mismatch"
+ssmforge "$SSD/a0.honest.json" "$SSD/a0.m3.json" auto
+[ "$(ssrec "$SSD/a0" commit '{"secret-scanner":"PASS"}' "$SSD/a0.m3.json")" = "('refused', 'secret-scan-mode-mismatch')" ] \
+  && grep -qF "mode: 분류 'auto' != 다시 구한 'always'" "$T/ss-rec.out" \
+  && ok "SS-o: secret-scanner 가 PASS 여도 선언 모드(auto)가 다시 구한 모드(always)와 다르면 거부" \
+  || ng "SS-o: 선언 모드 위조가 기록됐다 ($(cat "$T/ss-rec.out"))" "refused · mode: 분류 'auto' != 다시 구한 'always'"
+ssmforge "$SSD/a.honest.json" "$SSD/a.m1.json" always
+[ "$(ssrec "$SSD/a" commit '{}' "$SSD/a.m1.json")" = "('refused', 'secret-scan-mode-mismatch')" ] \
+  && ok "SS-o: auto 카테고리 분류의 secretScan.mode 를 always 로 바꿔도 거부 (선언 모드는 다시 구한 모드와 같아야 한다)" \
+  || ng "SS-o: auto 카테고리의 모드 위조가 기록됐다 ($(cat "$T/ss-rec.out"))" "refused secret-scan-mode-mismatch"
+# (o-e) mode=all 분류 — auto 카테고리여도 always 로 다시 구한다
+"$CL" "$SSD/a" all > "$SSD/a.all2.json" 2>"$T/ss-cl.err"
+[ "$(ssrec "$SSD/a" commit "$(sslanes "$SSD/a.all2.json" '')" "$SSD/a.all2.json")" = "('recorded', None)" ] \
+  && ok "SS-o: 정직한 all 분류(auto 카테고리) + 모든 lane PASS 는 기록된다" || ng "SS-o: 정직한 all 분류의 기록이 거부된다 ($(cat "$T/ss-rec.out"))" "recorded"
+ssmforge "$SSD/a.all2.json" "$SSD/a.all2.m1.json" drop
+[ "$(ssrec "$SSD/a" commit "$(sslanes "$SSD/a.all2.json" secret-scanner)" "$SSD/a.all2.m1.json")" = "('refused', 'secret-scan-mode-mismatch')" ] \
+  && ok "SS-o: all 분류에서 secret-scanner 를 빼면 auto 카테고리여도 거부 (all 은 always)" \
+  || ng "SS-o: all 분류에서 secret-scanner 없이 기록됐다 ($(cat "$T/ss-rec.out"))" "refused secret-scan-mode-mismatch"
+ssmforge "$SSD/a.all2.json" "$SSD/a.all2.m2.json" drop+auto
+[ "$(ssrec "$SSD/a" commit "$(sslanes "$SSD/a.all2.json" secret-scanner)" "$SSD/a.all2.m2.json")" = "('refused', 'secret-scan-mode-mismatch')" ] \
+  && ok "SS-o: all 분류의 secretScan.mode 를 카테고리 값(auto)으로 바꾸고 secret-scanner 를 빼도 거부" \
+  || ng "SS-o: all 분류의 모드 위조가 기록됐다 ($(cat "$T/ss-rec.out"))" "refused secret-scan-mode-mismatch"
+# 운영자가 읽는 곳 — 새 거부 사유가 SKILL.md 관측 로그 사유 목록에 있다
+python3 -c 'import sys; s=open(sys.argv[1], encoding="utf-8").read(); i=s.index("- `event: record` / `outcome: refused`"); seg=s[i:s.index("\n- `event:", i + 1)]; sys.exit(0 if "`secret-scan-mode-mismatch`" in seg else 1)' "$HOME/.claude/skills/preflight/SKILL.md" 2>"$T/py.err" \
+  && ok "SS-o: secret-scan-mode-mismatch 가 SKILL.md 관측 로그 사유 목록에 있다" || ng "SS-o: 새 거부 사유가 SKILL.md 에 없다" "secret-scan-mode-mismatch"
+
 # 정적 계약 — 기록 단계 재스캔과 프롬프트 블록이 코드에 있다
 grep -qF 'CONTRACT: secret-scan-recheck-at-record' "$HOME/.claude/skills/preflight/receipt.sh" \
   && grep -qF 'CONTRACT: secret-scan-recheck-at-record' "$HOME/.claude/skills/preflight/classify.sh" \
   && grep -qF 'CONTRACT: secret-scan-prompt-has-no-values' "$HOME/.claude/skills/preflight/preflight.js" \
-  && ok "SS: 기록 재스캔·프롬프트 계약 주석이 있다" || ng "SS: 계약 주석이 없다" "secret-scan-recheck-at-record · secret-scan-prompt-has-no-values"
+  && grep -qF 'CONTRACT: secret-scan-mode-rule' "$HOME/.claude/skills/preflight/classify.sh" \
+  && grep -qF 'CONTRACT: secret-scan-mode-rule' "$HOME/.claude/skills/preflight/secret-scan.sh" \
+  && ok "SS: 기록 재스캔·프롬프트·모드 규칙 계약 주석이 있다" || ng "SS: 계약 주석이 없다" "secret-scan-recheck-at-record · secret-scan-prompt-has-no-values · secret-scan-mode-rule"
 # END secret-scan-routing
 
 # BEGIN fast-path — 빈 게이트 단축 경로(DECISIONS.md 2026-11-19 「빈 게이트 단축 경로」)
