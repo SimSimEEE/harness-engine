@@ -12,6 +12,13 @@
 #       args.laneModel·laneEffort). 그 lane 을 재는 입력의 args.json 에만 들어간다. 이 override 가 실린
 #       실행의 결과는 영수증에 쓸 수 없는 꼴(MEASUREMENT_ONLY)로 나온다 — 측정 전용이다.
 #       모델끼리 비교하려면 override 마다 <out> 을 따로 만든다(예: haiku 한 번, sonnet 한 번).
+#   flip.sh run <out> [--k=N] [--agent=<lane>=<정의 파일>]... [--model=M] [--jobs=N] [fixture...]
+#       prepare 한 입력마다 결과가 k(기본 5)개가 되도록 헤드리스 세션(`${CLAUDE_BIN:-claude} -p`)에서 워크플로를
+#       한 번씩 돌린다 — <out>/<입력>/result-<i>.json, 읽히는 결과는 다시 돌리지 않는다(이어 채움). 통과한 결과를
+#       <out>/runs.txt 에 더하고, 하나라도 실패하면 exit 1. --model 은 헤드리스 오케스트레이터 모델(기본 sonnet),
+#       --jobs 는 동시 실행 수(기본 3), FLIP_PERMISSION_MODE 는 권한 모드(기본 auto).
+#       --agent 는 그 lane 정의를 파일에서 읽어 --agents 로 주입한다(frontmatter 의 description·model·tools, 본문이 prompt).
+#       manifest 의 injected 에 실경로·sha1 을 남기고, 다른 정의(또는 주입 없음)로 이미 돈 디렉터리면 거부한다.
 #   flip.sh score <out> [--min-agree=R] [--json] <fixture>=<result> ... | @<runs-file>
 #       result 는 워크플로 결과 JSON 이거나 그것이 든 작업 출력 파일이다.
 #       runs-file 은 줄마다 "<fixture> <result>" 다.
@@ -20,9 +27,11 @@
 #   flip.sh remeasure-score <out> [--min-agree=R] [--json] <fixture>=<result> ... | @<runs-file>
 #       결과의 claimRemeasure 를 픽스처 기대(mismatch · no-mismatch · unmeasurable)와 대조해 일치율을 낸다.
 #
-# 실행은 이 스크립트가 하지 않는다 — lane 은 워크플로로만 돈다. prepare 가 남긴
-# <out>/<fixture>/args.json 을 그대로 preflight.js 의 args 로 넘겨 k 번 돌리고, 결과 파일을 score 에 준다.
-# 영수증은 남기지 마라 — 측정이지 게이트 통과가 아니다.
+# 실행(run): lane 은 워크플로로만 돈다. 그런데 에이전트 정의는 세션 시작 때 고정된다 — agents/<lane>.md 를 고친
+# 세션에서 Workflow 로 돌리면 고치기 전 정의를 재고, 새로 만든 정의 파일은 그 세션에 보이지 않는다. 그래서 run 은
+# 실행마다 새 헤드리스 세션을 띄워 <out>/<fixture>/args.json 을 리터럴로 담은 래퍼 워크플로를 한 번 돌리고,
+# --agent 로 준 정의를 그 세션에 주입한다 — 고친 전후를 같은 방식으로 잰다. 결과 파일은 score 에 준다.
+# 영수증은 남기지 않는다 — 측정이지 게이트 통과가 아니다. (재측정 ③ 은 run 이 없다 — 손으로 돌린다.)
 #
 # 판정: 기대 판정과 일치한 비율이 --min-agree(기본 1.0) 미만인 lane 이 하나라도 있으면 exit 1.
 set -uo pipefail
@@ -30,8 +39,8 @@ SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 PF="$(dirname "$SELF")"
 cmd="${1:-}"; shift || true
 case "$cmd" in
-  prepare|score|remeasure-prepare|remeasure-score) ;;
-  *) echo "usage: flip.sh prepare|remeasure-prepare <out> [fixture...] | score|remeasure-score <out> [--min-agree=R] [--json] <fixture>=<result>... | @<runs-file>" >&2; exit 2 ;;
+  prepare|run|score|remeasure-prepare|remeasure-score) ;;
+  *) echo "usage: flip.sh prepare|remeasure-prepare <out> [fixture...] | run <out> [--k=N] [--agent=<lane>=<file>]... [--model=M] [--jobs=N] [fixture...] | score|remeasure-score <out> [--min-agree=R] [--json] <fixture>=<result>... | @<runs-file>" >&2; exit 2 ;;
 esac
 out="${1:-}"; [ -n "$out" ] || { echo "<out> 이 필요하다" >&2; exit 2; }
 shift
@@ -65,6 +74,159 @@ if [ "$cmd" = prepare ]; then
             --body-file="$out/$n/body.md" > "$out/$n/classify.json" 2>"$out/_logs/$n.classify.err" \
             || { echo "분류 실패: $n ($out/_logs/$n.classify.err)" >&2; exit 1; }
     done
+fi
+
+# ── 실행 — 헤드리스 세션마다 워크플로를 한 번 돌리고 결과를 파일로 남긴다.
+# 에이전트 정의는 세션 시작 때 고정된다. 정의를 고친 세션에서 재면 고치기 전 정의를 재고, 새 정의 파일은 그 세션에
+# 보이지 않는다. 그래서 실행마다 새 헤드리스 세션을 띄우고, --agent 로 준 정의를 --agents 로 주입한다.
+if [ "$cmd" = run ]; then
+[ -f "$out/manifest.json" ] || { echo "manifest.json 이 없다: $out — prepare 를 먼저 돌려라" >&2; exit 2; }
+out="$(cd "$out" && pwd -P)"
+OUT="$out" python3 - "$@" <<'PY'
+import concurrent.futures, hashlib, json, os, re, shutil, subprocess, sys
+OUT = os.environ['OUT']
+def die(msg, code=2):
+    print(msg, file=sys.stderr); sys.exit(code)
+def sha(p):
+    try: return hashlib.sha1(open(p, 'rb').read()).hexdigest()
+    except OSError: return None
+try:
+    man = json.load(open(os.path.join(OUT, 'manifest.json')))
+except Exception as e:
+    die(f'manifest.json 을 못 읽는다 — prepare 를 먼저 돌려라 ({e})')
+if 'fixtures' not in man or 'workflow' not in man: die('lane 측정 manifest 가 아니다 — run 은 prepare 의 결과에만 쓴다')
+
+k, model, jobs, agents, names = '5', 'sonnet', '3', {}, []
+for a in sys.argv[1:]:
+    if a.startswith('--k='): k = a[4:]
+    elif a.startswith('--jobs='): jobs = a[7:]
+    elif a.startswith('--model='): model = a[8:]
+    elif a.startswith('--agent='):
+        lane, sep, f = a[8:].partition('=')
+        if not (lane and sep and f): die(f'{a}: --agent=<lane>=<정의 파일> 꼴이어야 한다')
+        if lane in agents: die(f'{a}: {lane} 를 두 번 줬다')
+        agents[lane] = f
+    elif a.startswith('--'): die(f'알 수 없는 옵션: {a}')
+    else: names.append(a)
+try:
+    k, jobs = int(k), int(jobs)
+    assert k >= 1 and jobs >= 1
+except (ValueError, AssertionError):
+    die('--k·--jobs 는 1 이상의 정수다')
+if not model: die('--model 이 비었다')
+names = names or list(man['fixtures'])
+for n in names:
+    if n not in man['fixtures']: die(f'manifest 에 없는 입력: {n}')
+
+# 주입 정의 — frontmatter 의 description·model·tools 와 본문(prompt)
+def parse_def(path):
+    try: t = open(path).read()
+    except OSError as e: die(f'정의 파일을 못 읽는다: {path} ({e})')
+    m = re.match(r'^---\n(.*?)\n---\n?(.*)$', t, re.S)
+    if not m: die(f'{path}: frontmatter(--- … ---)가 없다')
+    fm, body = m.group(1), m.group(2)
+    def get(key):
+        r = re.search(rf'^{key}:[ \t]*(.*)$', fm, re.M)
+        if not r: return None
+        v = r.group(1).strip()
+        return v[1:-1] if len(v) >= 2 and v[0] == v[-1] and v[0] in '"\'' else v
+    d = {'description': get('description'), 'prompt': body}
+    if not d['description']: die(f'{path}: frontmatter 에 description 이 없다')
+    if get('model'): d['model'] = get('model')
+    if get('tools'):
+        d['tools'] = [x.strip().strip('"\'') for x in get('tools').strip('[]').split(',') if x.strip()]
+    return d
+measured = {l for f in man['fixtures'].values() for l in f['expect']}
+unmeasured = sorted(set(agents) - measured)
+if unmeasured: die(f'주입한 lane 을 재는 입력이 없다: {unmeasured} — 이 측정이 재는 lane: {sorted(measured)}')
+defs, injected = {}, {}
+for lane, f in sorted(agents.items()):
+    defs[lane] = parse_def(f)
+    injected[lane] = {'path': os.path.realpath(f), 'sha1': sha(f)}
+
+# 한 측정 디렉터리에는 한 정의의 결과만 — 이미 돈 실행과 주입 정의가 다르면 거부한다(sha1 으로 대조).
+# 주입 없이 돈 실행은 injected: {} 로 남아, 이후 주입 실행과도 섞이지 않는다.
+if 'injected' in man:
+    prev = {l: v.get('sha1') for l, v in (man['injected'] or {}).items()}
+    now = {l: v['sha1'] for l, v in injected.items()}
+    if prev != now:
+        die('이 측정 디렉터리는 다른 정의로 돈 결과를 담고 있다 — '
+            f'기존 주입 {json.dumps(prev) if prev else "없음(설치본)"} · 이번 {json.dumps(now) if now else "없음(설치본)"}. '
+            '정의마다 prepare 로 <out> 을 따로 만든다')
+
+claude = shutil.which(os.environ.get('CLAUDE_BIN') or 'claude')
+if not claude:
+    die(f'claude 를 찾지 못했다({os.environ.get("CLAUDE_BIN") or "claude"}) — Claude Code CLI 를 설치하거나 CLAUDE_BIN 으로 경로를 줘라')
+
+if 'injected' not in man:
+    man['injected'] = injected
+    json.dump(man, open(os.path.join(OUT, 'manifest.json'), 'w'), ensure_ascii=False, indent=1)
+logs = os.path.join(OUT, '_logs'); os.makedirs(logs, exist_ok=True)
+agents_file = None
+if defs:
+    agents_file = os.path.join(logs, 'agents.json')
+    json.dump(defs, open(agents_file, 'w'), ensure_ascii=False, indent=1)
+
+def valid(p):
+    try: d = json.load(open(p))
+    except Exception: return False
+    if isinstance(d, dict) and 'result' in d and 'lanes' not in d: d = d['result']
+    return isinstance(d, dict) and isinstance(d.get('lanes'), dict)
+
+wf = man['workflow']; wfdir = os.path.dirname(wf); tag = os.path.basename(OUT)
+todo = []
+for n in names:
+    for i in range(1, k + 1):
+        res = os.path.join(OUT, n, f'result-{i}.json')
+        if not valid(res): todo.append((n, i, res))   # 이어 채운다 — 읽히는 결과는 다시 돌리지 않는다
+
+def run_one(job):
+    n, i, res = job
+    base = os.path.join(OUT, n)
+    args = json.load(open(os.path.join(base, 'args.json')))
+    # 실행마다 고유 runId — 없으면 겹친 실행이 분류의 runNonce 로 같은 스냅숏 폴더를 쓴다
+    args['runId'] = f'flip-{tag}-{n}-{i}'
+    wr = os.path.join(base, f'run-{i}.wf.js')
+    # 인자는 리터럴로 담는다 — 헤드리스 세션에 JSON 을 중계시키면 문자열로 넘어가 워크플로가 args 를 못 읽는다
+    open(wr, 'w').write(
+        "export const meta = { name: 'flip-run', description: 'flip measurement: one preflight run with fixed args' }\n"
+        f"return await workflow({json.dumps({'scriptPath': wf})}, {json.dumps(args, ensure_ascii=False)})\n")
+    if os.path.exists(res): os.remove(res)
+    prompt = (f'Workflow 도구를 scriptPath=`{wr}` 로 한 번 호출한다(args 는 주지 않는다). 결과 저장의 Write 말고 다른 도구는 부르지 않는다. '
+              f'완료 알림이 오면 워크플로 결과 객체(lanes 를 포함한 JSON)를 가공 없이 Write 로 `{res}` 에 저장한다. '
+              '영수증 기록(receipt.sh record)은 하지 않는다 — 이것은 측정이지 게이트 통과가 아니다.')
+    cmd = [claude, '-p', prompt, '--model', model,
+           '--permission-mode', os.environ.get('FLIP_PERMISSION_MODE') or 'auto',
+           # Workflow 는 작업 폴더·추가 폴더 밖의 scriptPath 를 거부한다 — 래퍼 자리와 preflight.js 자리를 둘 다 연다
+           '--add-dir', OUT, '--add-dir', wfdir]
+    if agents_file: cmd += ['--agents', agents_file]
+    log = os.path.join(logs, f'run-{n}-{i}.log')
+    with open(log, 'w') as lf:
+        rc = subprocess.run(cmd, cwd=OUT, stdout=lf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL).returncode
+        lf.write(f'\nexit={rc}\n')
+    return n, i, res, log, valid(res)
+
+print(f'실행 {len(todo)}건 (입력 {len(names)}개 × k={k}, 읽히는 결과 제외) · 동시 {jobs} · 모델 {model}'
+      + (f' · 주입 {", ".join(sorted(defs))}' if defs else ' · 설치본 정의'))
+with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as ex:
+    done = list(ex.map(run_one, todo))
+
+rf = os.path.join(OUT, 'runs.txt')
+have = set(open(rf).read().splitlines()) if os.path.exists(rf) else set()
+bad = []
+with open(rf, 'a') as f:
+    for n, i, res, log, ok in sorted(done):
+        if not ok: bad.append((n, i, log)); continue
+        line = f'{n} {res}'
+        if line not in have: f.write(line + '\n'); have.add(line)
+if bad:
+    print(f'실패 {len(bad)}건 — 결과 파일이 없거나 lanes 가 든 JSON 이 아니다:', file=sys.stderr)
+    for n, i, log in bad: print(f'  {n} #{i}  로그: {log}', file=sys.stderr)
+    print('같은 명령을 다시 돌리면 빈 번호만 다시 돈다.', file=sys.stderr)
+    sys.exit(1)
+print(f'완료. 집계: flip.sh score {OUT} @{rf}')
+PY
+exit $?
 fi
 
 # ── 재측정(③) 측정 — 기대는 lane 판정이 아니라 ③ 의 결과 상태다. 판정 흔들림 측정과 섞지 않는다.
@@ -305,7 +467,7 @@ if CMD == 'prepare':
     for n, f in fixtures.items():
         print(f'  {n:<22} 기대 {json.dumps(f["expect"])}  args: {f["args"]}')
     warn_provenance(man['agentSources'])
-    print(f'각 args.json 을 {man["workflow"]} 의 args 로 k 번 돌리고 결과를 score 에 넘겨라 (영수증은 남기지 마라). 실행마다 서로 다른 runId 를 args 에 더해라.')
+    print(f'실행: flip.sh run {OUT} [--k=N] [--agent=<lane>=<정의 파일>] — 입력마다 헤드리스 세션에서 {man["workflow"]} 를 k 번 돌린다(영수증은 남기지 않는다). 손으로 돌리면 실행마다 서로 다른 runId 를 args 에 더해라.')
     sys.exit(0)
 
 # ── score ───────────────────────────────────────────────────────────────────
@@ -387,18 +549,25 @@ for n, fx in man['fixtures'].items():
         rows.append(row)
         if not rs or row['agreeRate'] < min_agree: failed.append(f'{n}/{lane}')
 
-# 드리프트는 prepare 가 기록한 경로를 다시 해시해 본다 — score 쪽 환경(PF_AGENTS_DIR)이 달라도 같은 파일을 대조한다
-now = {l: (lambda s: sha(s) if s else None)(((man.get('agentSources') or {}).get(l) or {}).get('source')) if man.get('agentSources') else agent_digests({l})[l] for l in {r['lane'] for r in rows}}
-drift = {l: (man['agents'].get(l), d) for l, d in now.items() if man['agents'].get(l) != d}
-res = {'harness': man['harness'], 'harnessDirty': man['harnessDirty'], 'agents': man['agents'],
-       'agentSources': man.get('agentSources'), 'overrides': man.get('overrides'),
+# run --agent 로 주입한 lane 은 설치본이 아니라 주입 파일을 쟀다 — 다이제스트·출처를 그것으로 바꾸고,
+# 설치본≠레포 경고는 그 lane 에 내지 않는다(설치본은 돌지 않았다).
+inj = man.get('injected') or {}
+agents_rep = {**man['agents'], **{l: v['sha1'] for l, v in inj.items()}}
+sources_rep = man.get('agentSources')
+if inj:
+    sources_rep = {**(sources_rep or {}), **{l: {'source': v['path'], 'injected': True} for l, v in inj.items()}}
+# 드리프트는 prepare(주입은 run)가 기록한 경로를 다시 해시해 본다 — score 쪽 환경(PF_AGENTS_DIR)이 달라도 같은 파일을 대조한다
+now = {l: sha(inj[l]['path']) if l in inj else (lambda s: sha(s) if s else None)(((man.get('agentSources') or {}).get(l) or {}).get('source')) if man.get('agentSources') else agent_digests({l})[l] for l in {r['lane'] for r in rows}}
+drift = {l: (agents_rep.get(l), d) for l, d in now.items() if agents_rep.get(l) != d}
+res = {'harness': man['harness'], 'harnessDirty': man['harnessDirty'], 'agents': agents_rep,
+       'agentSources': sources_rep, 'injected': man.get('injected'), 'overrides': man.get('overrides'),
        'agentsChangedSincePrepare': sorted(drift), 'minAgree': min_agree, 'rows': rows,
        'failed': failed, 'verdict': 'FAIL' if failed else 'PASS'}
 if as_json:
     print(json.dumps(res, ensure_ascii=False, indent=1))
 else:
     print(f'harness {man["harness"][:7]}{" (작업 중 변경 있음)" if man["harnessDirty"] else ""}'
-          f' · agents ' + ' '.join(f'{l}={(d or "-")[:7]}' for l, d in man['agents'].items())
+          f' · agents ' + ' '.join(f'{l}={(d or "-")[:7]}' + ('(주입)' if l in inj else '') for l, d in agents_rep.items())
           + (f' · override {json.dumps(man["overrides"])}' if man.get('overrides') else ''))
     for r in rows:
         print(f'  {r["fixture"]:<22} {r["lane"]:<14} 기대 {r["expect"]:<4} k={r["k"]} '
@@ -407,8 +576,10 @@ else:
               + (f' · 참고 {r["runsWithNotes"]}회/{r["distinctNotes"]}종' if r['runsWithNotes'] else ''))
     if drift:
         print(f'⚠ prepare 이후 에이전트 정의가 바뀌었다: {sorted(drift)} — 어느 정의를 잰 것인지 섞였을 수 있다')
+    for l, v in inj.items():
+        print(f'  {l}: 주입 정의 {v["path"]} 를 쟀다 (run --agent)')
     if man.get('agentSources'):
-        warn_provenance(man['agentSources'])
+        warn_provenance({l: v for l, v in man['agentSources'].items() if l not in inj})
     print(f'판정 {res["verdict"]} (일치율 기준 {min_agree:g})' + (f' — 미달: {", ".join(failed)}' if failed else ''))
 sys.exit(1 if failed else 0)
 PY
