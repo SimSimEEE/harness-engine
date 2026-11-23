@@ -368,6 +368,14 @@ if os.environ.get('KIND') == 'pr':
 # 갈렸고 분류 artifact 의 base(`base.mergeBase`, 없으면 `base.diffFrom`)가 재스캔이 다시 구한 범위 시작(`range.from`)과
 # 다르면 `secret-scan-base-moved` 다(분류 뒤 base 브랜치가 움직임). 둘 다 거부이고 사유만 가른다.
 # 근거는 DECISIONS.md 「시크릿 검사 결정론 우선」.
+#  (c) 모드를 다시 구한다 — 재스캔이 선언 카테고리의 rules.py 를 classify.sh 와 같은 루트(lib.sh pf_category_roots:
+#      엔진 categories/ 다음 오버레이 categories/)에서 읽어 categoryMode 를 낸다(CONTRACT secret-scan-mode-rule).
+#      분류 모드가 all 이면 always 다. 다시 구한 모드가 always 인데 secret-scanner 결과가 없거나 SKIPPED·NOT_APPLICABLE
+#      이면, 또는 분류의 secretScan.mode 가 다시 구한 모드와 다르면 거부한다. 사유는 `secret-scan-mode-mismatch` 다
+#      ((a)·(b) 에 걸리면 그쪽 사유가 먼저다). 재스캔이 카테고리를 읽기 전에 죽어 categoryMode 가 없으면 이 대조는
+#      건너뛴다 — 그때 status 는 SCAN_ERROR 라 (a)·(b) 가 secret-scanner 결과를 요구한다.
+#      한계: 카테고리 **이름** 자체를 위조하면(always 카테고리를 auto 카테고리 이름으로 바꿈) 이 대조는 그 이름의
+#      규칙으로 모드를 구하므로 통과한다. 소속을 다시 판정하지 않는다 — DECISIONS.md 「기록 단계가 시크릿 검사 모드를 다시 구한다」.
 _ss_decl = classify.get('secretScan')
 _ss_selected = 'secret-scanner' in (classify.get('selected') or {})
 if _ss_decl is not None or not _ss_selected:
@@ -384,6 +392,8 @@ if _ss_decl is not None or not _ss_selected:
         _ss_now = None
     if not isinstance(_ss_now, dict) or not _ss_now.get('status'):
         _ss_now = {'status': 'SCAN_ERROR', 'patternsVersion': None, 'reason': 'secret-scan.sh 재실행 실패'}
+    _ss_cat_mode = _ss_now.get('categoryMode') if _ss_now.get('categoryMode') in ('auto', 'always') else None
+    _ss_mode_now = None if _ss_cat_mode is None else ('always' if classify.get('mode') == 'all' else _ss_cat_mode)
     if not isinstance(_ss_decl, dict):
         _ss_bad.append('분류에 secretScan 이 없는데 secret-scanner 도 선택되지 않았다')
     else:
@@ -393,10 +403,19 @@ if _ss_decl is not None or not _ss_selected:
     _ss_lane = lanes.get('secret-scanner')
     _ss_lane_st = (_ss_lane.get('status') if isinstance(_ss_lane, dict) else _ss_lane) or ''
     # 선택된 lane 의 결과가 아예 없는 경우는 아래 no-gate-run·incomplete-lanes 가 잡는다 — 사유 코드를 섞지 않는다.
-    if _ss_now.get('status') != 'CLEAN' and (_ss_lane_st in ('SKIPPED', 'NOT_APPLICABLE')
-                                             or (not _ss_lane_st and not _ss_selected)):
+    _ss_lane_absent = _ss_lane_st in ('SKIPPED', 'NOT_APPLICABLE') or (not _ss_lane_st and not _ss_selected)
+    if _ss_now.get('status') != 'CLEAN' and _ss_lane_absent:
         _ss_bad.append(f"재스캔 {_ss_now.get('status')} 인데 secret-scanner 결과가 "
                        + ('없다' if not _ss_lane_st else _ss_lane_st))
+    _ss_mode_bad = []
+    if _ss_mode_now is not None:
+        _ss_mode_decl = _ss_decl.get('mode') if isinstance(_ss_decl, dict) else None
+        if isinstance(_ss_decl, dict) and _ss_mode_decl != _ss_mode_now:
+            _ss_mode_bad.append(f"mode: 분류 {_ss_mode_decl!r} != 다시 구한 {_ss_mode_now!r} "
+                                f"(카테고리 {classify.get('category')!r}, 분류 모드 {classify.get('mode')!r})")
+        if _ss_mode_now == 'always' and _ss_lane_absent:
+            _ss_mode_bad.append(f"카테고리 {classify.get('category')!r} 는 always 인데 secret-scanner 결과가 "
+                                + ('없다' if not _ss_lane_st else _ss_lane_st))
     _ss_reason, _ss_base_decl, _ss_base_now = 'secret-scan-mismatch', None, None
     if (_ss_bad and os.environ.get('KIND') == 'pr' and isinstance(_ss_decl, dict)
             and _ss_decl.get('status') != _ss_now.get('status')):
@@ -419,6 +438,14 @@ if _ss_decl is not None or not _ss_selected:
              rescanned=_ss_now.get('status'), patternsVersion=_ss_now.get('patternsVersion'),
              **({'baseDeclared': _ss_base_decl[:12], 'baseNow': _ss_base_now[:12]}
                 if _ss_reason == 'secret-scan-base-moved' else {}))
+        sys.exit(1)
+    if _ss_mode_bad:
+        print("게이트 기록 거부 — 시크릿 검사 모드가 카테고리 규칙과 맞지 않는다")
+        for _b in _ss_mode_bad: print(f"    {_b}")
+        print("  분류 artifact 가 바뀌었다 — always 카테고리(또는 all 모드)는 secret-scanner 를 늘 돌린다. classify.sh 부터 게이트를 다시 돌려라.")
+        _log('record', 'refused', reason='secret-scan-mode-mismatch', detail=_ss_mode_bad,
+             category=classify.get('category'), declaredMode=(_ss_decl.get('mode') if isinstance(_ss_decl, dict) else None),
+             recomputedMode=_ss_mode_now)
         sys.exit(1)
 
 selected = classify.get('selected') or {}

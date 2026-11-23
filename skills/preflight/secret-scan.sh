@@ -12,10 +12,12 @@
 #   --files-from : 검사할 파일 목록(분류의 files.all). 없으면 범위의 변경 파일 전부다.
 #            기록 단계는 이 값을 넘기지 않는다 — 분류 artifact 의 목록을 믿지 않고 범위에서 다시 구한다.
 #   --category : 카테고리 rules.py 의 SECRET_SENSITIVE_EXTRA(민감 경로 glob 튜플)를 더한다. 루트는 lib.sh pf_category_roots.
+#            같은 rules.py 의 SECRET_SCAN 으로 categoryMode('auto'|'always')를 낸다 — 기록 단계가 모드를 다시 구하는 근거다.
 #   --extra : 민감 경로 glob 을 직접 더한다(여러 번).
 #
 # stdout: {status, patternsVersion, scannedLines, files, hits:[{file,line,pattern,grade}], sensitivePaths, ...}
 #   status: CLEAN | HITS | SENSITIVE_PATH | SCAN_ERROR
+#   categoryMode: 'auto' | 'always' — 카테고리를 읽었을 때만 낸다(없으면 'always'). mode=all 은 반영하지 않는다(호출자 몫).
 #   **값은 어디에도 내지 않는다** — 패턴 이름·파일·줄 번호만. 이 출력은 분류 JSON 과 lane 프롬프트로 간다.
 #   같은 입력이면 같은 출력이다(시각·난수 없음, 정렬).
 # exit: 0 스캔 결과를 냈다(SCAN_ERROR 포함) · 2 사용법 오류
@@ -61,6 +63,8 @@ def out(obj):
 
 def fail(reason, **kw):
     """스캔을 끝내지 못했다 — 판단이 서지 않으면 도는 쪽이다(secret-scanner 를 부른다)."""
+    if globals().get('CAT_MODE'):          # 카테고리를 읽은 뒤의 실패면 모드는 안다
+        kw.setdefault('categoryMode', CAT_MODE)
     out({'status': 'SCAN_ERROR', 'reason': reason, 'patternsVersion': kw.pop('version', None),
          'scannedLines': 0, 'files': kw.pop('files', 0), 'hits': [], 'hitsTruncated': 0,
          'sensitivePaths': [], **kw})
@@ -83,6 +87,12 @@ except Exception as e:
 # ── 카테고리가 더하는 민감 경로
 extras = [a for a in sys.argv[1:] if a]
 cat = os.environ.get('SS_CATEGORY') or ''
+# CONTRACT: secret-scan-mode-rule — classify.sh SECRET_SCAN_MODE 와 같은 규칙이다: 상수가 정확히 'auto' 일 때만 auto,
+# 없거나 'always'·알 수 없는 값이면 always. 카테고리가 없으면 always(classify.sh 의 CAT 없음과 같다).
+# 카테고리를 읽기 전의 실패(SCAN_ERROR)에는 categoryMode 가 없다 — 기록 단계는 그때 모드 대조를 하지 않고
+# status 가 CLEAN 이 아니라는 이유로 secret-scanner 결과를 요구한다.
+CAT_MODE = None
+_cat_mode = 'always'
 if cat:
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]*', cat):
         fail(f'카테고리 이름이 아니다: {cat!r}', version=VERSION)
@@ -98,9 +108,11 @@ if cat:
         _ex = getattr(_mod, 'SECRET_SENSITIVE_EXTRA', ()) or ()
         assert isinstance(_ex, (tuple, list)) and all(isinstance(g, str) and g for g in _ex), 'SECRET_SENSITIVE_EXTRA 는 glob 문자열 튜플이다'
         extras += list(_ex)
+        _cat_mode = 'auto' if getattr(_mod, 'SECRET_SCAN', None) == 'auto' else 'always'
     except Exception as e:
         fail(f'카테고리 {cat} 의 rules.py 를 읽지 못했다 ({type(e).__name__}: {e})'[:200], version=VERSION)
 extras = sorted(set(extras))
+CAT_MODE = _cat_mode
 
 def _seg(p):
     r = ''
@@ -303,7 +315,7 @@ res = {'status': status, 'patternsVersion': VERSION, 'scannedLines': scanned,
        'addedLines': added, 'removedLines': removed, 'files': len(files), 'range': rng_out,
        'hits': hits[:HITS_CAP], 'hitsTruncated': max(0, len(hits) - HITS_CAP),
        'sensitivePaths': sens_paths, 'sensitiveExtra': extras, 'binaryFiles': binary_files,
-       'missedFiles': (missed + not_in_range)[:50]}
+       'missedFiles': (missed + not_in_range)[:50], 'categoryMode': CAT_MODE}
 if reason:
     res['reason'] = reason
 out(res)

@@ -581,6 +581,7 @@ _post_pr = _branch_has_pr_gate()
 # mode=all 은 'always' 로 본다(대상이 없어도 도는 모드다). 스캔이 죽으면 SCAN_ERROR 로 보고 선택한다(도는 쪽).
 # 값은 어디에도 싣지 않는다 — 스캔 출력이 패턴 이름·파일·줄 번호뿐이다.
 # CONTRACT: secret-scan-recheck-at-record — receipt.sh record 가 같은 대상으로 다시 스캔해 status·patternsVersion 을 대조한다.
+# CONTRACT: secret-scan-mode-rule — secret-scan.sh 의 categoryMode 와 같은 규칙이다(기록 단계가 그 값으로 모드를 다시 구한다).
 _ss_rule = _rule('SECRET_SCAN')
 SECRET_SCAN_MODE = 'auto' if (_ss_rule == 'auto' and MODE != 'all') else 'always'
 def _secret_scan():
