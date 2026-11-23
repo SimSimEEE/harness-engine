@@ -665,6 +665,8 @@ Rev.5 를 논하기 전에 여기서 세어야 할 것: 거부 사유 분포, wa
   차이나 끝나지 않은 실행을 이유로 막는지(기대 PASS, 회귀 짝 `-regress` 는 기대 FAIL) 잰다
   측정되는 에이전트 정의는 이 레포가 아니라 **설치본**(`~/.claude/agents`, 오버레이가 덮었으면 오버레이 것)이다 — manifest 의
   `agentSources` 가 실경로를 남기고, 레포 정의와 다르면 prepare·score 가 경고한다
+  실행은 `run <out> [--k=N] [--agent=<lane>=<정의 파일>]` 이 헤드리스 세션(`claude -p`)마다 한 번씩 돌리고 `<out>/runs.txt` 를
+  남긴다 — 에이전트 정의는 세션 시작 때 고정되므로, 고친 정의는 `--agent` 로 주입해 잰다(manifest `injected`, 정의가 다른 실행은 섞지 않는다)
 - 재측정(③) 측정: `$P/eval/flip.sh remeasure-prepare` 로 `eval/claims/remeasure-*.sh` 입력을 만들고 각 `args.json` 으로
   워크플로를 k(≥5) 번 돌린 뒤 `remeasure-score` 에 결과를 넘긴다 — 픽스처별 일치율·기대 불일치 미보고 수가 나온다
 - 각 lane 의 판정 기준: `agents/<lane>.md` (로컬 `~/.claude/agents/`, 플러그인 `<plugin>/agents/`)

@@ -350,3 +350,20 @@ a=70 a_sessions=13 b=62 main=202 home=45 norepo=78 path_outside_repo=9
 ### 기록 단계가 시크릿 검사 모드를 다시 구한다
 
 - `receipt.sh record` 가 재스캔(`secret-scan.sh --category <선언 카테고리>`, 루트는 `classify.sh` 와 같은 엔진·오버레이 순서)의 `categoryMode` 로 모드를 다시 구하고(`all` 분류는 always), always 인데 `secret-scanner` 결과가 없거나 SKIPPED·NOT_APPLICABLE 이면, 또는 분류의 `secretScan.mode` 와 다르면 `secret-scan-mode-mismatch` 로 거부한다(백로그 「record 단계가 카테고리의 `SECRET_SCAN` 을 다시 계산하지 않는다」). 한계: 카테고리 **이름**을 위조하면(always 카테고리를 auto 카테고리 이름으로) 그 이름의 규칙으로 구하므로 통과한다 — 소속 재판정은 하지 않았다. 호환 수정이라 `ENGINE_VERSION` 은 그대로. 어디: `secret-scan.sh`(`categoryMode`), `receipt.sh`(CONTRACT `secret-scan-recheck-at-record` (c)), `classify.sh`·`secret-scan.sh`(CONTRACT `secret-scan-mode-rule`), `SKILL.md`, `meta-test/engine.sh`(SS-o).
+
+### flip 측정 실행을 레포에 넣었다 — 헤드리스 세션에 정의를 주입하는 `flip.sh run`
+
+- **무엇**: `eval/flip.sh run <out> [--k=N] [--agent=<lane>=<정의 파일>]... [--model=M] [--jobs=N]` 이 prepare 한 입력마다 결과가
+  k 개가 되도록 헤드리스 세션(`${CLAUDE_BIN:-claude} -p`)을 띄워 워크플로를 한 번씩 돌린다. 실행마다 `args.json` 과 고유 `runId` 를
+  리터럴로 담은 래퍼 워크플로(`<입력>/run-<i>.wf.js`)를 만들고 세션에는 그 경로만 준다(JSON 을 중계시키면 문자열로 넘어가 워크플로가
+  args 를 못 읽었다). `--add-dir` 로 측정 디렉터리와 `preflight.js` 자리를 둘 다 연다(Workflow 는 그 밖의 scriptPath 를 거부한다).
+  읽히는 결과는 다시 돌리지 않고(이어 채움), 통과한 결과만 `runs.txt` 에 더한다. `--agent` 는 정의 파일의 frontmatter
+  (description·model·tools)와 본문을 `--agents` 로 주입하고 manifest `injected` 에 실경로·sha1 을 남긴다. 이미 다른 정의(또는 주입 없음)로
+  돈 디렉터리면 거부한다. `score` 는 주입 lane 의 다이제스트·출처를 주입 파일로 보고하고, 그 lane 에 설치본≠레포 경고를 내지 않는다.
+- **왜**: 에이전트 정의는 세션 시작 때 고정된다 — `agents/<lane>.md` 를 고친 세션에서 Workflow 로 돌리면 고치기 전 정의를 재고, 새로 만든
+  정의 파일은 그 세션에 보이지 않는다(실측). 지난 전후 측정은 임시 스크립트로 헤드리스 세션에 정의를 주입했는데, 그 스크립트가 레포에
+  없었고 manifest 의 `agents` 는 주입한 정의가 아니라 설치본을 기록했다 — 잰 정의와 기록된 정의가 달랐다.
+- **치른 값**: 실행마다 헤드리스 오케스트레이터 세션이 하나씩 더 돈다(기본 sonnet — lane 비용에 더해지는 몫). 결과 파일은 그 세션의
+  LLM 이 Write 로 옮긴다 — 가공하거나 빼먹을 수 있어, run 은 파일이 JSON 으로 읽히고 `lanes` 가 있는지만 확인하고 내용의 충실성은
+  보장하지 않는다. `--agents` 에는 frontmatter 의 `effort` 등 다른 키가 실리지 않는다.
+- **어디**: `eval/flip.sh`(`run`, score 의 `injected`), `SKILL.md`(참고 절), `meta-test/engine.sh`(flip run — `CLAUDE_BIN` 스텁, 모델 호출 없음).

@@ -3744,6 +3744,92 @@ python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); v=m["agentSources"]
   && ok "복사 설치에서는 설치본을 설치본과 대조하지 않는다 — sameAsRepo=None 과 경고" \
   || ng "복사 설치에서 빈 대조로 일치를 주장한다 [rc=$_frc]$(_diag "$T/py.err")" "sameAsRepo=None · 경고"
 
+# flip run — 헤드리스 세션마다 래퍼 워크플로를 한 번 돌린다. 실제 모델은 부르지 않는다(CLAUDE_BIN 스텁).
+# 정의는 세션 시작 때 고정되므로 --agent 로 주입한 정의를 쟀다는 기록이 결과와 함께 가야 하고,
+# 두 정의의 결과가 한 디렉터리에 섞이면 안 된다.
+FRS="$T/flip-stub.sh"
+cat > "$FRS" <<'STUB'
+#!/bin/bash
+# 인자를 래퍼 옆에 덤프하고, 래퍼의 args 리터럴로 가짜 워크플로 결과를 쓴다(FLIP_STUB_MODE=noresult 면 안 쓴다).
+python3 - "$@" <<'PY'
+import json, os, re, sys
+a = sys.argv[1:]; p = a[a.index('-p') + 1]
+wr = re.search(r'scriptPath=`([^`]+)`', p).group(1); res = re.search(r'`([^`]*result-\d+\.json)`', p).group(1)
+src = open(wr).read(); lit = src.split('return await workflow(', 1)[1]
+dec = json.JSONDecoder(); head, e = dec.raw_decode(lit, lit.index('{')); args, _ = dec.raw_decode(lit, lit.index('{', e))
+ag = open(a[a.index('--agents') + 1]).read() if '--agents' in a else None
+json.dump({'argv': a, 'cwd': os.getcwd(), 'scriptPath': head.get('scriptPath'), 'runId': args.get('runId'),
+           'result': res, 'agents': ag}, open(wr + '.stub.json', 'w'))
+with open(os.path.join(os.getcwd(), '_stub-calls'), 'a') as f: f.write(wr + '\n')
+if os.environ.get('FLIP_STUB_MODE') != 'noresult':
+    lane = next(iter(args['classification']['selected']))
+    json.dump({'repo': args['repo'], 'verdict': 'PASS', 'lanes': {lane: {'status': 'PASS'}}, 'blocking': [], 'notes': []}, open(res, 'w'))
+PY
+STUB
+chmod +x "$FRS"
+FRD="$T/flip-def.md"
+printf -- '---\nname: vault-linter\ndescription: "injected variant for flip run"\nmodel: haiku\ntools: Read, Grep\n---\n\n# injected body\nCheck the note.\n' > "$FRD"
+FR="$T/flip-run"
+PF_AGENTS_DIR="$FA" bash "$FL" prepare "$FR" vault-clean-note >/dev/null 2>&1
+_fcalls(){ wc -l < "$FR/_stub-calls" 2>/dev/null | tr -d ' ' || echo 0; }
+CLAUDE_BIN="$FRS" bash "$FL" run "$FR" --k=2 --agent=vault-linter="$FRD" > "$T/flip-run1.out" 2>&1; _frc=$?
+python3 - "$FR" "$FRD" <<'PY' 2>"$T/py.err" && [ "$_frc" -eq 0 ] \
+  && ok "flip run: 입력마다 k 번 헤드리스 세션을 띄워 고유 runId 의 래퍼를 돌리고, 주입 정의·추가 폴더 둘을 넘기고, 통과한 결과를 runs.txt 에 남긴다" \
+  || ng "flip run 배관이 어긋난다 [rc=$_frc]$(_diag "$T/py.err")" "결과 2 · runs.txt 2줄 · runId 고유 · --agents=정의 · --add-dir 2 · injected sha1"
+import hashlib, json, os, sys
+o, df = os.path.realpath(sys.argv[1]), sys.argv[2]; m = json.load(open(os.path.join(o, 'manifest.json')))
+n = 'vault-clean-note'; base = os.path.join(o, n)
+assert all(os.path.isfile(os.path.join(base, f'result-{i}.json')) for i in (1, 2))
+lines = open(os.path.join(o, 'runs.txt')).read().splitlines()
+assert sorted(lines) == [f'{n} {base}/result-{i}.json' for i in (1, 2)], lines
+st = [json.load(open(os.path.join(base, f'run-{i}.wf.js.stub.json'))) for i in (1, 2)]
+assert st[0]['runId'] != st[1]['runId'] and all(s['runId'] and s['runId'].startswith('flip-') for s in st), [s['runId'] for s in st]
+assert all(s['scriptPath'] == m['workflow'] for s in st)
+body = open(df).read().split('---\n', 2)[2]
+for s in st:
+    ag = json.loads(s['agents'])['vault-linter']
+    assert ag['prompt'] == body and ag['model'] == 'haiku' and ag['tools'] == ['Read', 'Grep'] and ag['description'] == 'injected variant for flip run', ag
+    a = s['argv']; dirs = [a[i + 1] for i, x in enumerate(a) if x == '--add-dir']
+    assert dirs == [o, os.path.dirname(m['workflow'])], dirs
+    assert a[a.index('--model') + 1] == 'sonnet' and a[a.index('--permission-mode') + 1] == 'auto' and s['cwd'] == o
+sha = hashlib.sha1(open(df, 'rb').read()).hexdigest()
+assert m['injected'] == {'vault-linter': {'path': os.path.realpath(df), 'sha1': sha}}, m['injected']
+PY
+CLAUDE_BIN="$FRS" bash "$FL" run "$FR" --k=3 --agent=vault-linter="$FRD" > "$T/flip-run2.out" 2>&1; _frc=$?
+[ "$_frc" -eq 0 ] && [ "$(_fcalls)" = 3 ] && [ "$(wc -l < "$FR/runs.txt" | tr -d ' ')" = 3 ] \
+  && ok "flip run 을 다시 돌리면 읽히는 결과는 두고 빈 번호만 채운다" || ng "flip run 이 이어 채우지 않는다 [rc=$_frc calls=$(_fcalls)]" "호출 3 · runs.txt 3줄"
+cp "$FRD" "$T/flip-def2.md"; printf 'another rule\n' >> "$T/flip-def2.md"
+_fb=0
+CLAUDE_BIN="$FRS" bash "$FL" run "$FR" --k=4 --agent=vault-linter="$T/flip-def2.md" >/dev/null 2>&1; [ $? -eq 2 ] || _fb=1
+CLAUDE_BIN="$FRS" bash "$FL" run "$FR" --k=4 >/dev/null 2>&1; [ $? -eq 2 ] || _fb=1
+[ "$_fb" = 0 ] && [ "$(_fcalls)" = 3 ] \
+  && ok "flip run 은 다른 정의·주입 없는 실행을 이미 돈 측정 디렉터리에 섞지 않는다(exit 2)" || ng "flip run 이 두 정의의 결과를 섞는다 [calls=$(_fcalls)]" "둘 다 exit 2 · 호출 3"
+FR3="$T/flip-run3"; bash "$FL" prepare "$FR3" vault-clean-note >/dev/null 2>&1
+_fb=0
+CLAUDE_BIN="$FRS" bash "$FL" run "$FR3" --agent=test-runner="$FRD" >/dev/null 2>&1; [ $? -eq 2 ] || _fb=1
+CLAUDE_BIN="$T/no-such-claude" bash "$FL" run "$FR3" >/dev/null 2>&1; [ $? -eq 2 ] || _fb=1
+bash "$FL" run "$T/flip-none" >/dev/null 2>&1; [ $? -eq 2 ] || _fb=1
+[ "$_fb" = 0 ] && ! grep -q '"injected"' "$FR3/manifest.json" && [ ! -e "$FR3/_stub-calls" ] \
+  && ok "flip run 은 재지 않는 lane 주입·claude 없음·manifest 없음을 exit 2 로 거부하고 아무것도 남기지 않는다" || ng "flip run 이 잘못된 실행을 받는다" "셋 다 exit 2 · injected 없음 · 호출 0"
+_fs=$(bash "$FL" score "$FR" "@$FR/runs.txt" 2>&1); _frc=$?
+_fj=$(bash "$FL" score "$FR" --json "@$FR/runs.txt" 2>&1)
+python3 - "$_fj" "$FRD" <<'PY' 2>"$T/py.err" && [ "$_frc" -eq 0 ] && printf '%s' "$_fs" | grep -q 'vault-linter=[0-9a-f]\{7\}(주입)' \
+  && ! printf '%s' "$_fs" | grep -q 'vault-linter: 측정되는 정의는 설치본' && ! printf '%s' "$_fs" | grep -q '바뀌었다' \
+  && ok "flip score 는 주입 정의의 다이제스트·출처를 보고하고, 그 lane 에 설치본≠레포 경고를 내지 않는다" \
+  || ng "flip score 가 주입 정의를 보고하지 않는다 [rc=$_frc]$(_diag "$T/py.err")" "agents=주입 sha1 · (주입) · 설치본 경고 없음"
+import hashlib, json, os, sys
+d = json.loads(sys.argv[1]); sha = hashlib.sha1(open(sys.argv[2], 'rb').read()).hexdigest()
+assert d['agents']['vault-linter'] == sha and d['agentSources']['vault-linter'] == {'source': os.path.realpath(sys.argv[2]), 'injected': True}
+assert d['injected']['vault-linter']['sha1'] == sha and d['agentsChangedSincePrepare'] == [] and d['rows'][0]['k'] == 3
+PY
+cp "$FRD" "$T/flip-def.bak"; printf 'edited after run\n' >> "$FRD"
+bash "$FL" score "$FR" "@$FR/runs.txt" 2>&1 | grep -q "에이전트 정의가 바뀌었다: \['vault-linter'\]" \
+  && ok "flip score 는 주입 정의 파일을 다시 해시해 바뀌었으면 경고한다" || ng "flip score 가 주입 정의의 드리프트를 못 본다" "경고"
+cp "$T/flip-def.bak" "$FRD"
+FLIP_STUB_MODE=noresult CLAUDE_BIN="$FRS" bash "$FL" run "$FR" --k=4 --agent=vault-linter="$FRD" > "$T/flip-run5.out" 2>&1; _frc=$?
+[ "$_frc" -eq 1 ] && ! grep -q 'result-4' "$FR/runs.txt" && grep -q "run-vault-clean-note-4.log" "$T/flip-run5.out" \
+  && ok "flip run 은 결과를 남기지 못한 실행을 runs.txt 에 넣지 않고 로그 경로와 함께 exit 1" || ng "flip run 이 실패한 실행을 통과로 센다 [rc=$_frc]" "exit 1 · runs.txt 에 없음 · 로그 경로"
+
 # 워크플로 쪽 — 블록을 떼어 스텁으로 돌린다
 _PJO="$HOME/.claude/skills/preflight/preflight.js"
 { printf 'const run = (args, laneList, clsLoad) => eval(\n'
