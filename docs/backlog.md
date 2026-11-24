@@ -140,7 +140,7 @@ REPO 는 스크립트 디렉터리 기준이라 그 설치 형태에서 체크�
 
 **먼저 셀 것**: 프로필이 있는 Python 레포 수와 그 레포들의 테스트 러너 종류.
 
-닫힘: 분류기가 카테고리와 무관하게 `.py` 로직 변경 + 스냅숏의 `test_*.py`·`*_test.py` 에서 `test-runner` 를 고르고 Python 회귀 명령(pytest 신호(설정·conftest·함수형 테스트)가 있으면 `python3 -m pytest -q <dirs>`, 없으면 테스트 파일 디렉터리마다 `python3 -B -m unittest discover -s <dir> [-t <top>] -p <패턴>`)을 확정한다 — `skills/preflight/DECISIONS.md` 2026-11-24 「Python 테스트를 분류기가 확정한다」, 회귀 `meta-test/engine.sh` 「Python 테스트」 py(a)~(x). "먼저 셀 것" 은 관측 로그로 셌다(관찰): `.py` 를 바꾼 라운드가 있는 레포 중 테스트가 있는 레포 둘, 둘 다 `unittest`.
+닫힘: 분류기가 카테고리와 무관하게 `.py` 로직 변경 + 스냅숏의 `test_*.py`·`*_test.py` 에서 `test-runner` 를 고르고 Python 회귀 명령(pytest 신호(설정·conftest·함수형 테스트)가 있으면 `python3 -B -m pytest -q -p no:cacheprovider <dirs>`, 없으면 테스트 파일 디렉터리마다 `python3 -B -m unittest discover -s <dir> [-t <top>] -p <패턴>`)을 확정한다 — `skills/preflight/DECISIONS.md` 2026-11-24 「Python 테스트를 분류기가 확정한다」, 회귀 `meta-test/engine.sh` 「Python 테스트」 py(a)~(y). "먼저 셀 것" 은 관측 로그로 셌다(관찰): `.py` 를 바꾼 라운드가 있는 레포 중 테스트가 있는 레포 둘, 둘 다 `unittest`.
 
 ### record 단계가 카테고리의 `SECRET_SCAN` 을 다시 계산하지 않는다 — 닫힘 (2026-11-23)
 위치: `skills/preflight/receipt.sh` record 의 재스캔(CONTRACT `secret-scan-recheck-at-record`) · `skills/preflight/classify.sh`

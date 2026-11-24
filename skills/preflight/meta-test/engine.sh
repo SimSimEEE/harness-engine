@@ -4294,9 +4294,9 @@ for _cf in 'pytest.ini:[pytest]' 'pyproject.toml:[tool.pytest.ini_options]' 'set
   PY="$T/py-c"; pyrepo "$PY" tools test_m.py; printf '%s\n' "${_cf#*:}" > "$PY/${_cf%%:*}"; git -C "$PY" add -A
   _pyc3="$_pyc3$(_pyc "$(ixcl "$PY" commit)");"
 done
-_pyw="cd <스냅숏> && python3 -m pytest -q tools"
+_pyw="cd <스냅숏> && python3 -B -m pytest -q -p no:cacheprovider tools"
 [ "$_pyc3" = "$_pyw;$_pyw;$_pyw;" ] \
-  && ok "py(c): pytest 설정(pytest.ini·pyproject·setup.cfg)이 있으면 python3 -m pytest -q <dirs>" || ng "py(c): pytest 명령이 다르다 ($_pyc3)" "$_pyw ×3"
+  && ok "py(c): pytest 설정(pytest.ini·pyproject·setup.cfg)이 있으면 python3 -B -m pytest -q -p no:cacheprovider <dirs>" || ng "py(c): pytest 명령이 다르다 ($_pyc3)" "$_pyw ×3"
 # 설정 파일이 있어도 pytest 절이 없으면 unittest 다
 PY="$T/py-c2"; pyrepo "$PY" tools test_m.py; printf '[tool.black]\n' > "$PY/pyproject.toml"; git -C "$PY" add -A
 case "$(_pyc "$(ixcl "$PY" commit)")" in *"unittest discover"*) ok "py(c): pytest 절 없는 pyproject.toml 은 pytest 설정이 아니다";;
@@ -4304,18 +4304,18 @@ case "$(_pyc "$(ixcl "$PY" commit)")" in *"unittest discover"*) ok "py(c): pytes
 # pytest 인자는 조상이 이미 인자인 디렉터리를 빼고 낸다 (pytest 는 비패키지 하위도 수집)
 PY="$T/py-c3"; pyrepo "$PY" tools/sub test_s.py; mkdir -p "$PY/lib"; cp "$PY/tools/sub/test_s.py" "$PY/tools/test_t.py"; cp "$PY/tools/sub/test_s.py" "$PY/lib/test_l.py"
 printf '[pytest]\n' > "$PY/pytest.ini"; git -C "$PY" add -A
-[ "$(_pyc "$(ixcl "$PY" commit)")" = "cd <스냅숏> && python3 -m pytest -q lib tools" ] \
+[ "$(_pyc "$(ixcl "$PY" commit)")" = "cd <스냅숏> && python3 -B -m pytest -q -p no:cacheprovider lib tools" ] \
   && ok "py(c): pytest 인자에서 조상이 있는 하위 디렉터리를 뺀다" || ng "py(c): pytest 인자가 겹친다 ($(_pyc "$(ixcl "$PY" commit)"))" "pytest -q lib tools"
 # 러너 선택(_py_runner): pytest 신호(설정·conftest.py·함수형 테스트)가 하나라도 있으면 pytest — unittest discover 는 함수형을 0개로 센다.
 _pyrw(){ ixj "$1" 'd["laneMeta"]["test-runner"]["pythonTests"]["runner"] + ":" + ",".join(d["laneMeta"]["test-runner"]["pythonTests"]["why"])'; }
 _pyfn='def test_x():\n    assert 1 + 1 == 2\n'
 # (l) conftest.py + 함수형
 PY="$T/py-l"; pyrepo "$PY" tests test_m.py; printf "$_pyfn" > "$PY/tests/test_m.py"; printf '' > "$PY/conftest.py"; git -C "$PY" add -A; O=$(ixcl "$PY" commit)
-[ "$(_pyc "$O")" = "cd <스냅숏> && python3 -m pytest -q tests" ] && [ "$(_pyrw "$O")" = "pytest:conftest,function-style" ] \
+[ "$(_pyc "$O")" = "cd <스냅숏> && python3 -B -m pytest -q -p no:cacheprovider tests" ] && [ "$(_pyrw "$O")" = "pytest:conftest,function-style" ] \
   && ok "py(l): conftest.py + 함수형 테스트 → pytest (근거 conftest·function-style)" || ng "py(l): conftest 레포가 pytest 가 아니다 ($(_pyc "$O") / $(_pyrw "$O"))" "pytest -q tests, conftest,function-style"
 # (m) 설정·conftest 없이 함수형만
 PY="$T/py-m"; pyrepo "$PY" tests test_m.py; printf "$_pyfn" > "$PY/tests/test_m.py"; git -C "$PY" add -A; O=$(ixcl "$PY" commit)
-[ "$(_pyc "$O")" = "cd <스냅숏> && python3 -m pytest -q tests" ] && [ "$(_pyrw "$O")" = "pytest:function-style" ] \
+[ "$(_pyc "$O")" = "cd <스냅숏> && python3 -B -m pytest -q -p no:cacheprovider tests" ] && [ "$(_pyrw "$O")" = "pytest:function-style" ] \
   && ok "py(m): 함수형 테스트만 있으면 설정이 없어도 pytest (근거 function-style)" || ng "py(m): 함수형 테스트를 unittest 로 돌린다 ($(_pyc "$O") / $(_pyrw "$O"))" "pytest -q tests, function-style"
 # conftest.py 만 있어도(테스트는 TestCase) pytest 다
 PY="$T/py-m2"; pyrepo "$PY" tests test_m.py; printf '' > "$PY/tests/conftest.py"; git -C "$PY" add -A
@@ -4326,7 +4326,7 @@ PY="$T/py-n"; pyrepo "$PY" tools test_m.py; O=$(ixcl "$PY" commit)
   && ok "py(n): 전부 TestCase 형이고 pytest 신호가 없으면 unittest (근거 없음)" || ng "py(n): TestCase 레포의 러너가 바뀌었다 ($(_pyrw "$O"))" "unittest:"
 # (o) TestCase 와 함수형이 섞이면 pytest — unittest 로 돌리면 함수형이 빠진다
 PY="$T/py-o"; pyrepo "$PY" tools test_m.py; printf "$_pyfn" > "$PY/tools/test_f.py"; git -C "$PY" add -A; O=$(ixcl "$PY" commit)
-[ "$(_pyc "$O")" = "cd <스냅숏> && python3 -m pytest -q tools" ] && [ "$(ixj "$O" 'd["laneMeta"]["test-runner"]["pythonTests"]["functionStyle"]')" = "['tools/test_f.py']" ] \
+[ "$(_pyc "$O")" = "cd <스냅숏> && python3 -B -m pytest -q -p no:cacheprovider tools" ] && [ "$(ixj "$O" 'd["laneMeta"]["test-runner"]["pythonTests"]["functionStyle"]')" = "['tools/test_f.py']" ] \
   && ok "py(o): TestCase 와 함수형이 섞이면 pytest, 함수형 파일이 근거로 남는다" || ng "py(o): 섞인 레포에서 함수형을 놓친다 ($(_pyc "$O"))" "pytest -q tools, functionStyle [tools/test_f.py]"
 # 파일 형 판정은 구문 트리(ast)다 — import 문·주석·문자열은 근거가 아니다. _pyst <내용> → "러너:근거"
 _pyst(){ PY="$T/py-st"; pyrepo "$PY" tools test_m.py; printf '%b' "$1" > "$PY/tools/test_m.py"; git -C "$PY" add -A; _pyrw "$(ixcl "$PY" commit)"; }
@@ -4414,6 +4414,21 @@ _pyg1=$(ixj "$(ixcl "$PY" commit)" '([s["name"] for s in d["laneMeta"]["test-run
   && ok "py(g): Python 테스트가 없으면 shell-tool suites 는 그대로다" || ng "py(g): Python 규칙이 기존 suites 를 바꿨다 ($_pyg0)" "['meta-test'] shell-tool"
 [ "$_pyg1" = "(['meta-test', 'python-tests:tools'], 'shell-tool')" ] \
   && ok "py(g): shell-tool suites 에 Python 명령이 더해진다 (대체하지 않는다)" || ng "py(g): 카테고리 suites 와 합쳐지지 않는다 ($_pyg1)" "meta-test + python-tests:tools"
+
+# (y) 회귀 명령이 확정되면 test-runner 프롬프트에 "실행 가능한 테스트가 없다·tsc 만" 을 내지 않는다 — Python 전용 레포는
+#     tscOnly=True(package.json 없음)라 그 문장이 회귀 명령과 함께 나가면 lane 이 회귀 명령을 건너뛰어 suite-not-run 이 된다.
+#     프롬프트는 preflight.js 를 스텁 에이전트로 돌려 받는다(변이 절의 stub-prompts.cjs).
+_PYPJ="$HOME/.claude/skills/preflight/preflight.js"
+ixcl "$T/py-a" commit > "$T/py-y.json"
+_pyy=$(node "$T/stub-prompts.cjs" "$_PYPJ" "$T/py-y.json" 2>"$T/py-y.err" | python3 -c 'import json,sys; t=json.load(sys.stdin).get("test-runner",""); print("discover -s tools" in t, "실행 가능한 테스트가 없다" in t)' 2>>"$T/py-y.err")
+[ "$(ixj "$(cat "$T/py-y.json")" 'd["laneMeta"]["test-runner"]["tscOnly"]')" = "True" ] && [ "$_pyy" = "True False" ] \
+  && ok "py(y): Python 전용 레포의 test-runner 프롬프트는 회귀 명령만 싣고 '실행 가능한 테스트가 없다' 를 내지 않는다" \
+  || ng "py(y): tsc 만 돌리라는 문장이 Python 회귀 명령과 함께 나간다 ($_pyy)" "True False"
+# 대조: 회귀 명령이 없는 TS 레포(테스트 없음)에는 그 문장이 그대로 나간다
+PY="$T/py-y2"; ixrepo "$PY"; mkdir -p "$PY/src"; printf 'export const a = 1;\n' > "$PY/src/a.ts"; git -C "$PY" add -A; git -C "$PY" "$G" -qm init
+printf 'export const a = 2;\n' > "$PY/src/a.ts"; git -C "$PY" add -A; ixcl "$PY" commit > "$T/py-y2.json"
+_pyy2=$(node "$T/stub-prompts.cjs" "$_PYPJ" "$T/py-y2.json" 2>>"$T/py-y.err" | python3 -c 'import json,sys; t=json.load(sys.stdin).get("test-runner",""); print(bool(t), "실행 가능한 테스트가 없다" in t)' 2>>"$T/py-y.err")
+[ "$_pyy2" = "True True" ] && ok "py(y): 회귀 명령 없는 TS 레포에는 tsc 만 문장이 그대로 나간다" || ng "py(y): tsc 만 문장이 사라졌다 ($_pyy2)" "True True"
 
 # R10 — PR 모드는 merge-base..HEAD 의 커밋만 본다.
 IX="$T/ix10"; ixrepo "$IX"; git init -q --bare -b main "$IX.origin.git"; git -C "$IX" remote add origin "$IX.origin.git"

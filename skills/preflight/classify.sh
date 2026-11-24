@@ -792,7 +792,7 @@ def _python_suites():
     if _runner == 'pytest':
         # pytest 는 비패키지 하위도 수집한다 — 조상이 이미 인자에 있는 디렉터리는 뺀다.
         _run = sorted(d for d in _dirs if not any(_py_under(a, d) for a in _dirs))
-        _mk = 'python3 -m pytest -q ' + ' '.join(shlex.quote(d) for d in _run)
+        _mk = 'python3 -B -m pytest -q -p no:cacheprovider ' + ' '.join(shlex.quote(d) for d in _run)
         _out = [{'name': 'python-tests', 'marker': _mk, 'cmd': f'cd {SNAP_TOKEN} && {_mk}', 'why': _logic}]
     else:
         _out, _run = [], []

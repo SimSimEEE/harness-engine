@@ -502,7 +502,7 @@ a=70 a_sessions=13 b=62 main=202 home=45 norepo=78 path_outside_repo=9
   해소 불가 베이스만 있는 파일은 다른 신호가 없으면 unittest 로 남는다 — 그 베이스가 TestCase 면 discover 가 실제로 찾아 돈다(py(w)),
   TestCase 가 아니면 0개 실행으로 3.12+ 는 FAIL(exit 5), 그 전 버전은 통과한다(한계). import 문은 근거가 아니고 주석·문자열은 트리에 없다.
   모든 테스트 파일이 unittest 형이고 신호가 없을 때만 unittest 다. unittest discover 는 함수형 테스트를 0개로 센다(3.12+ exit 5 를 test-runner 가 환경
-  문제로 오진하기 쉽고, 3.12 미만은 0개로 통과) — 그래서 신호 하나로 pytest 로 기운다. pytest 면 `cd <스냅숏> && python3 -m pytest -q <dirs>`
+  문제로 오진하기 쉽고, 3.12 미만은 0개로 통과) — 그래서 신호 하나로 pytest 로 기운다. pytest 면 `cd <스냅숏> && python3 -B -m pytest -q -p no:cacheprovider <dirs>`
   한 개, unittest 면 디렉터리마다 `cd <스냅숏> && python3 -B -m unittest discover -s <dir> [-t <top>] -p 'test_*.py'`(`*_test.py` 만 있으면
   `-p '*_test.py'`). 디렉터리가 패키지(`__init__.py`)면 `__init__.py` 가 이어지는 가장 위 패키지의 부모를 `-t` 로 준다(루트면 `-t .`) —
   import 이름이 패키지 경로가 된다. 다른 디렉터리 a 의 `discover -s a` 가 이미 수집하는 디렉터리(a→d 사이가 모두 패키지, 같은 패턴)는
@@ -515,6 +515,12 @@ a=70 a_sessions=13 b=62 main=202 home=45 norepo=78 path_outside_repo=9
 - **기록 단계**: `suite-not-run` 은 그대로 적용된다 — `marker` 가 명령 문자열 자체(`python3 -B -m unittest discover …`)라서
   `receipt.sh` 의 `_ran_script` 가 전사에서 그 문자열이 명령 자리에 왔는지 센다(`cd <경로> && ` 뒤, `/usr/bin/` 같은 경로 접두, 뒤의
   `2>&1 | tail` 은 허용). 패턴·플래그를 바꿔 돌리면 확정된 명령의 실행이 아니다. `receipt.sh` 는 고치지 않았다.
+- **프롬프트**: Python 전용 레포는 package.json 이 없어 `tscOnly=True` 다. `preflight.js` 가 그 값으로 "실행 가능한 테스트가 없다 —
+  `tsc --noEmit` 만" 을 회귀 명령과 함께 내면, lane 이 그 문장을 따라 회귀 명령을 건너뛰고 기록이 `suite-not-run` 으로 거부된다. 그래서
+  변이 하네스가 아닌 회귀 명령이 하나라도 있으면 그 문장을 내지 않는다(`tscOnly` 는 jest 기준선일 뿐이다). 분류기에서 Python 블록만
+  `tscOnly` 를 안 세우는 방법은 고르지 않았다 — shell-tool 카테고리 suites 도 같은 `setdefault` 로 엔진 레포(package.json 없음)에 같은 충돌을
+  만들고, 프롬프트 한 곳에서 막으면 두 경로가 같이 닫힌다. pytest 명령은 `-B -p no:cacheprovider` 로 스냅숏에 `__pycache__`·`.pytest_cache`
+  를 쓰지 않는다(unittest 경로의 `-B` 와 같다).
 - **test-runner**: 회귀 명령을 글자 그대로 돌리고 종료 코드·마지막 요약 줄을 보고한다. 명령을 돌리지 못하면(예: `No module named pytest`)
   다른 회귀 명령과 같이 FAIL 이다 — reason 에 원인이 환경임과 해결(pytest 설치)을 적는다. `Ran 0 tests`·`NO TESTS RAN`·`no tests ran` 은
   테스트를 찾지 못한 것으로 FAIL, reason 에 0개 실행과 분류기 판정 근거를 적는다 — 환경 문제로 쓰지 않는다(`agents/test-runner.md` 0.8).
@@ -530,6 +536,6 @@ a=70 a_sessions=13 b=62 main=202 home=45 norepo=78 path_outside_repo=9
 - **한계**: pytest 설정은 스냅숏 **루트**만 본다. 기준선 비교는 없다(다른 회귀 명령과 같이 하나라도 실패하면 FAIL).
   pytest 로 판정된 레포(설정·conftest·함수형)에서 그 파이썬에 pytest 가 없으면 게이트가 막힌다 — 의도다. `preflight.js` 의 회귀 명령 지시("돌리지 못했으면
   그것도 FAIL")를 따라 fail-closed 로 두었고, 해결은 pytest 설치다(test-runner 는 reason 에 환경 원인과 해결을 적는다).
-- **어디**: `classify.sh`(Python 테스트 블록), `agents/test-runner.md`(0.8), `SKILL.md`(lane 표 한 줄), `docs/backlog.md`(닫힘),
-  `meta-test/engine.sh`(「Python 테스트」 절 py(a)~(x)). `ENGINE_VERSION` 2.7 → **2.8**(호환되는 추가 — 새 회귀 명령·laneMeta 키,
+- **어디**: `classify.sh`(Python 테스트 블록), `preflight.js`(test-runner 프롬프트의 tsc 만 문장), `agents/test-runner.md`(0.8), `SKILL.md`(lane 표 한 줄), `docs/backlog.md`(닫힘),
+  `meta-test/engine.sh`(「Python 테스트」 절 py(a)~(y)). `ENGINE_VERSION` 2.7 → **2.8**(호환되는 추가 — 새 회귀 명령·laneMeta 키,
   프로필 계약 그대로).
