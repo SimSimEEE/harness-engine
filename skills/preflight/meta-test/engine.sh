@@ -468,7 +468,14 @@ _ev2=$(python3 -c 'import json,sys; r=json.loads(open(sys.argv[1]).read().splitl
 [ "$_ev2" = "refused $_ev_want" ] && ok "거부 기록에도 엔진 버전이 남는다" || ng "거부 로그의 엔진 버전 ($_ev2)" "refused $_ev_want"
 
 # 표식을 못 읽는 엔진 — 설치본을 통째로 복사하고 ENGINE_VERSION 만 지우거나 망가뜨린다.
+# 기록은 카테고리 소속을 다시 판정하고(CONTRACT category-recheck-at-record), 그 판정은 프로필이 있으면 엔진 버전으로 프로필
+# 호환을 본다(프로필 결속 — 못 읽으면 exit 3). 그래서 기록 자신의 불개입은 **프로필이 없는 오버레이**에서 본다: 설치본의
+# 오버레이(있으면)에서 categories/ 만 가져와 분류와 같은 카테고리로 판정하게 하고 profiles/ 는 뺀다. 프로필이 있을 때의
+# 거부는 아래 별도 단언이 고정한다.
 _evc="$T/ev-engine"; cp -RL "$HOME/.claude/skills/preflight" "$_evc" 2>/dev/null
+_ev_ov=$(bash -c '. "$1/lib.sh"; pf_overlay_dir' _ "$_evc")
+_evo="$T/ev-overlay"; rm -rf "$_evo"; mkdir -p "$_evo"
+[ -n "$_ev_ov" ] && [ -d "$_ev_ov/categories" ] && ln -s "$_ev_ov/categories" "$_evo/categories"
 for _evcase in missing garbage three-part; do
   case "$_evcase" in
     missing)    rm -f "$_evc/ENGINE_VERSION" ;;
@@ -476,11 +483,22 @@ for _evcase in missing garbage three-part; do
     three-part) printf '1.0.0\n' > "$_evc/ENGINE_VERSION" ;;
   esac
   : > "$T/ev3.jsonl"
-  if PF_LOG="$T/ev3.jsonl" "$_evc/receipt.sh" record "$G" "$repo" "{\"$LANE\":\"PASS\"}" >/dev/null 2>&1
-  then ok "엔진 버전 $_evcase → 기록은 진행된다"; else ng "엔진 버전 $_evcase 가 기록을 막았다" "판정 불개입 (rc 0)"; fi
+  if PF_OVERLAY_DIR="$_evo" PF_LOG="$T/ev3.jsonl" "$_evc/receipt.sh" record "$G" "$repo" "{\"$LANE\":\"PASS\"}" > "$T/ev3.out" 2>&1
+  then ok "엔진 버전 $_evcase → 기록은 진행된다"; else ng "엔진 버전 $_evcase 가 기록을 막았다$(_diag "$T/ev3.out")" "판정 불개입 (rc 0)"; fi
   _ev=$(_ev_read "$T/ev3.jsonl" "$repo/.git/claude-preflight.json"); _pytb $LINENO
   [ "$_ev" = "null|null" ] && ok "엔진 버전 $_evcase → 로그·영수증 null" || ng "엔진 버전 $_evcase 의 기록값 ($_ev)" "null|null"
 done
+# 프로필이 있으면 엔진 버전을 못 읽는 기록은 소속 재판정에서 멈춘다 — category-unresolved(detail profile), 로그 engineVersion 은 null.
+# 프로필은 이 레포와 무관해도 된다(적재 단계에서 모든 프로필의 호환을 본다). 여기서 _evc 의 ENGINE_VERSION 은 위 마지막 경우(1.0.0)다.
+mkdir -p "$_evo/profiles/acme"
+printf '{"repo":"Acme/EvProbe","category":"generic","engineVersion":"%s","adjustments":[]}\n' "$_ev_want" > "$_evo/profiles/acme/evprobe.json"
+: > "$T/ev4.jsonl"
+PF_OVERLAY_DIR="$_evo" PF_LOG="$T/ev4.jsonl" "$_evc/receipt.sh" record "$G" "$repo" "{\"$LANE\":\"PASS\"}" > "$T/ev4.out" 2>&1; _ev4rc=$?
+_ev4=$(python3 -c 'import json,sys; r=json.loads(open(sys.argv[1]).read().splitlines()[-1]); print(r.get("outcome"), r.get("reason"), r.get("detail"), r.get("engineVersion", "MISSING"))' "$T/ev4.jsonl" 2>"$T/py.err"); _pytb $LINENO
+[ "$_ev4rc" = 1 ] && [ "$_ev4" = "refused category-unresolved profile None" ] && grep -qF '엔진 버전(skills/preflight/ENGINE_VERSION)을 읽지 못해' "$T/ev4.out" \
+  && ok "엔진 버전을 못 읽고 프로필이 있으면 기록은 category-unresolved(detail profile)로 거부되고 로그 engineVersion 은 null" \
+  || ng "프로필이 있을 때 엔진 버전 없는 기록 [rc=$_ev4rc] ($_ev4)$(_diag "$T/ev4.out")" "rc 1 · refused category-unresolved profile None · 읽지 못해"
+rm -rf "$_evo"
 # 뒤 절이 쓰는 영수증을 설치본 엔진의 기록으로 되돌린다.
 "$R" record "$G" "$repo" "{\"$LANE\":\"PASS\"}" >/dev/null 2>&1
 

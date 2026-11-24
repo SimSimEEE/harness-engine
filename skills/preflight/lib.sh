@@ -70,7 +70,8 @@ export PF_LOG
 
 # 엔진 버전 — 같은 디렉터리의 `ENGINE_VERSION` 첫 줄. 손으로 올린다(근거: DECISIONS.md 「엔진 버전 표식」).
 # 형식은 `MAJOR.MINOR` 만 받는다. 파일이 없거나 형식이 아니면 **빈 문자열**을 낸다 — 기록하는 쪽이
-# null 로 남긴다. **판정에 관여하지 않는다**: 읽지 못해도 record 는 그대로 진행된다.
+# null 로 남긴다. **기록은 이 값으로 판정하지 않는다**: 읽지 못해도 record 자신은 그대로 진행된다. 단 프로필이 있으면
+# record 의 카테고리 재판정(classify.sh category)이 프로필 결속에서 exit 3 으로 멈춰 category-unresolved 로 거부된다.
 pf_engine_version() {
     local f v
     f="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ENGINE_VERSION"

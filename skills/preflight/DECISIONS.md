@@ -470,6 +470,9 @@ a=70 a_sessions=13 b=62 main=202 home=45 norepo=78 path_outside_repo=9
   재현: 레포 루트에서 `bash skills/preflight/classify.sh "$PWD" category [--of=pr]` 를 10회 돌려 벽시계 시간의 중앙값을 낸다.
 - **한계**: 재판정은 판정 **입력**(스냅숏)이 같을 때 같은 답을 낸다는 데 기댄다 — 분류와 기록 사이에 `rules.py`·`categories.json`·
   프로필·오버레이 설정이 바뀌면 정직한 분류도 `category-mismatch`·`category-unresolved` 로 거부된다(다시 분류하면 된다).
+  설치본 `ENGINE_VERSION` 을 못 읽게 된 경우도 같다 — 프로필이 있으면 재판정이 프로필 결속에서 멈춰 `category-unresolved`
+  (detail `profile`)다. 그래서 「엔진 버전 표식」의 기록 불개입은 "기록 자신은 이 값으로 판정하지 않는다" 로 좁혀진다
+  (meta-test 「엔진 버전」 절: 프로필 없는 오버레이에서 기록 진행·null, 프로필이 있으면 거부).
   `all` 분류는 커밋 기록으로만 받으므로 인덱스로 판정한다. 카테고리 이름이 아닌 다른 artifact 필드(`selected` 의 관례 lane 등)의
   위조는 이 검사 범위 밖이다.
 - **해소**: 2026-11-23 「기록 단계가 시크릿 검사 모드를 다시 구한다」의 한계 문장(카테고리 이름 위조)은 이 절로 닫힌다.
