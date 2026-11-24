@@ -9,9 +9,10 @@
 #
 # usage:
 #   receipt.sh record commit|pr <dir> [lanes-json|@file] [classify-json|@file] [transcripts-dir]
-#   receipt.sh record commit|pr <dir> --lanes-b64=<b64> --lanes-sha256=<hex> --transcripts-marker=<표식>
-#     워크플로 안 기록(preflight.js 기록 에이전트). lanes 는 디코드 바이트의 sha256 이 맞을 때만, 전사 디렉터리는
-#     표식이 든 최근 wf 디렉터리가 정확히 하나일 때만 받는다. 그 뒤 검사는 위 형태와 같다. 로그·영수증 via=workflow.
+#   receipt.sh record commit|pr <dir> --lanes-sha256=<hex> --transcripts-marker=<표식>
+#     워크플로 안 기록(preflight.js 기록 에이전트). 전사 디렉터리는 표식이 든 최근 wf 디렉터리가 정확히 하나일 때만,
+#     lanes 는 그 디렉터리의 기록 에이전트 프롬프트에 실린 `pf-record-lanes=<b64>` 줄을 디코드해 sha256 이 맞을 때만 받는다.
+#     `--lanes-b64=<b64>` 를 주면 프롬프트 대신 그 값을 쓴다(2.6 형태). 그 뒤 검사는 위 형태와 같다. 로그·영수증 via=workflow.
 #     게이트 결과 기록 (스테이징 후). transcripts-dir 을 넘기면 전사 기반 검사 셋이 켜진다
 #     (no-lane-evidence · concealed-promotion · sequence-violated). 넘겼는데 못 읽으면 거부한다.
 #     classify 를 생략하면 <gitdir>/claude-preflight.classify.json 을 자동으로 읽는다.
@@ -38,7 +39,8 @@ set -uo pipefail
 
 # 워크플로 안 기록(preflight.js 의 기록 에이전트, DECISIONS.md 2026-11-24 「워크플로 안에서 기록」)의 입력은 이름 붙은
 #  옵션이다 — 위치 인자 자리와 섞이지 않게 먼저 떼어 낸다. 옵션이 있는데 위치 인자로도 같은 것을 주면 record 가 거부한다.
-#   --lanes-b64=<base64> --lanes-sha256=<hex>  lanes-json 의 UTF-8 바이트와 그 sha256. 다르면 `lanes-digest-mismatch`
+#   --lanes-sha256=<hex>  lanes-json 의 UTF-8 바이트의 sha256. 바이트는 표식으로 찾은 기록 에이전트 프롬프트의
+#     `pf-record-lanes=` 줄(없거나 여럿이면 `lanes-payload-unresolved`) 또는 `--lanes-b64=<base64>` 에서 온다. 다르면 `lanes-digest-mismatch`
 #   --transcripts-marker=pf-record:<꼬리>:<16hex>  최근 워크플로 전사에서 이 표식이 있는 wf 디렉터리 **하나**를 찾아
 #     전사 디렉터리로 쓴다. 0개·2개 이상이면 `transcripts-marker-unresolved`. 이 기록은 관측 로그·영수증에 `via: workflow` 로 남는다
 lanes_b64=""; lanes_sha=""; tmarker=""; _opt_b64=0; _opt_sha=0; _opt_marker=0
@@ -152,33 +154,44 @@ if _OPT_MARKER:
     VIA = os.environ['VIA'] = 'workflow'
 
 # CONTRACT: workflow-record-inputs
-# 워크플로 안 기록(preflight.js 기록 에이전트)의 두 입력. lane 결과는 모델이 옮겨 적은 base64 라 sha256 으로 대조하고,
-# 전사 디렉터리는 기록 에이전트 프롬프트에만 실린 표식으로 찾는다. 둘 다 통과하면 위치 인자 형태와 같은 검사로 간다.
-if os.environ.get('OPT_B64') == '1' or os.environ.get('OPT_SHA') == '1':
-    import base64, hashlib
-    if os.environ.get('POS_LANES'):
-        print("게이트 기록 거부 — lanes 를 위치 인자와 --lanes-b64 로 함께 줬다 (하나만 준다)")
-        _log('record', 'refused', reason='lanes-digest-mismatch', detail='both-inputs')
-        sys.exit(2)
-    _want = (os.environ.get('LANES_SHA') or '').strip().lower()
+# 워크플로 안 기록(preflight.js 기록 에이전트)의 입력. 명령에는 sha256 과 표식만 오고, lane 결과(base64)는 표식으로 찾은
+# wf 디렉터리에서 기록 에이전트 전사의 **첫 user 메시지**(런타임이 쓴 프롬프트)의 `pf-record-lanes=` 줄에서 읽는다 —
+# 모델이 수 KB 를 명령에 옮겨 적는 경로가 없다(DECISIONS.md 2026-11-24 「lane 결과는 전사에서 읽는다」). 2.6 의
+# `--lanes-b64`(모델이 옮겨 적은 base64)도 아직 받는다. 어느 쪽이든 디코드 바이트의 sha256 이 `--lanes-sha256` 과 같아야 한다.
+import base64 as _b64m, hashlib as _hlm
+_WANT = (os.environ.get('LANES_SHA') or '').strip().lower()
+_FROM_TX = os.environ.get('OPT_SHA') == '1' and os.environ.get('OPT_B64') != '1' and _OPT_MARKER
+def _accept_lanes(_b64s, _src):
+    global lanes
     try:
-        _raw = base64.b64decode(os.environ.get('LANES_B64') or '', validate=True)
+        _raw = _b64m.b64decode(_b64s or '', validate=True)
     except Exception:
         _raw = None
-    _got = hashlib.sha256(_raw).hexdigest() if _raw is not None else None
-    if os.environ.get('OPT_B64') != '1' or not re.fullmatch(r'[0-9a-f]{64}', _want) or _raw is None or _got != _want:
-        print("게이트 기록 거부 — --lanes-b64 의 디코드 바이트가 --lanes-sha256 과 맞지 않는다")
-        print(f"    기대 {_want[:12] or '(없음)'} · 받은 {(_got or '(디코드 실패)')[:12]}")
+    _got = _hlm.sha256(_raw).hexdigest() if _raw is not None else None
+    if not re.fullmatch(r'[0-9a-f]{64}', _WANT) or _raw is None or _got != _WANT:
+        print(f"게이트 기록 거부 — {_src} 의 디코드 바이트가 --lanes-sha256 과 맞지 않는다")
+        print(f"    기대 {_WANT[:12] or '(없음)'} · 받은 {(_got or '(디코드 실패)')[:12]}")
         print("  워크플로가 낸 lane 결과가 옮겨지다 바뀌었다. 워크플로 결과의 receiptLanes 를 파일로 써서 @파일 로 기록해라.")
-        _log('record', 'refused', reason='lanes-digest-mismatch', declared=_want[:12], got=(_got or '')[:12])
+        _log('record', 'refused', reason='lanes-digest-mismatch', declared=_WANT[:12], got=(_got or '')[:12], source=_src)
         sys.exit(1)
     try:
         os.environ['LANES'] = _raw.decode('utf-8')
     except UnicodeDecodeError:
-        print("게이트 기록 거부 — --lanes-b64 의 디코드 바이트가 UTF-8 이 아니다")
-        _log('record', 'refused', reason='lanes-digest-mismatch', detail='not-utf8')
+        print(f"게이트 기록 거부 — {_src} 의 디코드 바이트가 UTF-8 이 아니다")
+        _log('record', 'refused', reason='lanes-digest-mismatch', detail='not-utf8', source=_src)
         sys.exit(1)
     lanes = _parse('LANES')
+if os.environ.get('OPT_B64') == '1' or os.environ.get('OPT_SHA') == '1':
+    if os.environ.get('POS_LANES'):
+        print("게이트 기록 거부 — lanes 를 위치 인자와 --lanes-b64·--lanes-sha256 으로 함께 줬다 (하나만 준다)")
+        _log('record', 'refused', reason='lanes-digest-mismatch', detail='both-inputs')
+        sys.exit(2)
+    if os.environ.get('OPT_B64') != '1' and not _FROM_TX:
+        print("게이트 기록 거부 — --lanes-sha256 만 주고 lane 결과의 출처(--transcripts-marker 또는 --lanes-b64)가 없다")
+        _log('record', 'refused', reason='lanes-digest-mismatch', detail='no-lanes-source')
+        sys.exit(1)
+    if os.environ.get('OPT_B64') == '1':
+        _accept_lanes(os.environ.get('LANES_B64'), '--lanes-b64')
 if _OPT_MARKER:
     import glob as _gm, time as _tm
     _mk = os.environ.get('TMARKER') or ''
@@ -208,6 +221,38 @@ if _OPT_MARKER:
         _log('record', 'refused', reason='transcripts-marker-unresolved', marker=_mk, matches=len(_found))
         sys.exit(1)
     os.environ['TRANSCRIPTS'] = _found[0]
+    if _FROM_TX:
+        # 기록 에이전트 전사 = 이 디렉터리에서 첫 user 메시지에 표식이 든 전사. 첫 user 메시지만 본다 — 에이전트 자신의
+        # 도구 호출·출력(뒤 줄)에 쓴 `pf-record-lanes=` 는 입력이 아니다. 전사 하나·줄 하나일 때만 받는다.
+        # 런타임은 프롬프트 앞에 머리말 한 줄을 붙이고 모든 줄을 공백 두 칸 들여 쓴다 — 줄 머리 공백을 허용한다.
+        _payloads = []
+        for _f in sorted(_gm.glob(os.path.join(_gm.escape(_found[0]), 'agent-*.jsonl'))):
+            _first = None
+            try:
+                with open(_f, encoding='utf-8', errors='replace') as _fh:
+                    for _ln in _fh:
+                        try:
+                            _o = json.loads(_ln)
+                        except Exception:
+                            continue
+                        _m = _o.get('message') if isinstance(_o, dict) else None
+                        if isinstance(_m, dict) and _m.get('role') == 'user':
+                            _c = _m.get('content')
+                            _first = _c if isinstance(_c, str) else '\n'.join(
+                                b.get('text', '') for b in (_c or []) if isinstance(b, dict) and b.get('type') == 'text')
+                            break
+            except OSError:
+                continue
+            if _first and _mk in _first:
+                _payloads.append(re.findall(r'^[ \t]*pf-record-lanes=(\S*)[ \t]*$', _first, re.M))
+        if len(_payloads) != 1 or len(_payloads[0]) != 1:
+            print(f"게이트 기록 거부 — 기록 에이전트 프롬프트에서 lane 결과(pf-record-lanes=)를 하나로 정하지 못했다 "
+                  f"(표식이 든 프롬프트 {len(_payloads)}개, 줄 {sum(len(x) for x in _payloads)}개)")
+            print("  워크플로 결과의 receiptLanes 를 파일로 써서 @파일 로 기록해라.")
+            _log('record', 'refused', reason='lanes-payload-unresolved', prompts=len(_payloads),
+                 lines=sum(len(x) for x in _payloads))
+            sys.exit(1)
+        _accept_lanes(_payloads[0][0], '기록 에이전트 프롬프트의 pf-record-lanes')
 
 OK = {'PASS', 'SKIPPED', 'NOT_APPLICABLE'}
 bad = []

@@ -422,3 +422,26 @@ a=70 a_sessions=13 b=62 main=202 home=45 norepo=78 path_outside_repo=9
 - **어디**: `preflight.js`(BEGIN auto-record · CONTRACT `auto-record-pass-only`, 결과 `recorded`), `receipt.sh`(CONTRACT
   `workflow-record-inputs`, via 어휘), `classify.sh`(`engineDir`), `SKILL.md`(§ 4·관측 로그), `meta-test/engine.sh`(WR-a~g).
   `ENGINE_VERSION` 2.5 → **2.6**(호환되는 추가 — 새 옵션·결과 키, 위치 인자 형태는 그대로).
+
+### lane 결과는 전사에서 읽는다 — 기록 명령에서 base64 를 뺐다
+
+- **왜**: 2.6 의 워크플로 안 기록이 PR 게이트에서 매번 `lanes-digest-mismatch` 로 거부돼 메인 기록으로 폴백했다. 2026-11-24
+  lemon-claude-config 게이트 4회 중 커밋 게이트 1회는 RECORDED, PR 게이트 2회는 REFUSED. 두 거부의 기록 에이전트 전사를 대조하면
+  프롬프트의 base64 는 sha256 과 맞았고(3108자·2388자), 에이전트가 명령에 옮겨 적은 값이 달랐다 — 한 번은 1349번째 글자 뒤 201자가
+  빠졌고(2907자, 디코드 실패), 한 번은 2164번째 글자부터 바뀌었다(2384자). PR 게이트는 lane 이 여럿이고 `metrics` 가 `reason` 으로 들어가
+  lane 결과가 수 KB 다. 커밋 게이트(lane 하나)는 짧아 옮겨 적기가 맞았다. 옮겨 적기 오류는 길이에 따라 늘므로 재시도로 풀리지 않는다.
+  재현: 위 전사(`subagents/workflows/wf_*/agent-*.jsonl` 중 `--lanes-b64` 가 든 것)의 첫 user 메시지와 Bash `tool_use` 의 `--lanes-b64=` 값 비교.
+- **무엇**: 기록 명령은 `receipt.sh record commit|pr <repo> --lanes-sha256=<hex> --transcripts-marker=<표식>` 이다. base64 는 기록 에이전트
+  프롬프트의 `pf-record-lanes=<b64>` 줄에만 싣고, receipt.sh 가 표식으로 찾은 wf 디렉터리에서 첫 user 메시지에 표식이 든 전사를 골라
+  그 메시지(런타임이 쓴 프롬프트)의 그 줄을 디코드해 sha256 으로 대조한다. 모델이 옮겨 적는 값은 sha256(64자)·표식·레포 경로뿐이다.
+  첫 user 메시지만 입력이다 — 에이전트 자신의 도구 호출·출력(뒤 줄)에 쓴 줄은 읽지 않는다. 표식이 든 프롬프트나 그 줄이 하나가 아니면
+  `lanes-payload-unresolved`, 출처(표식·`--lanes-b64`) 없이 sha256 만 오면 `lanes-digest-mismatch`. `--lanes-b64` 는 그대로 받는다(2.6 형태).
+- **충실도**: 전사는 런타임이 쓴다. 프롬프트 바이트가 곧 워크플로가 계산한 바이트이므로 옮겨 적기 오류가 끼어들 자리가 없다. lane 상태
+  위조는 지금처럼 전사 검증(`no-lane-evidence` 등)이 잡는다.
+- **전사 형식**: 런타임은 계산된 프롬프트 앞에 `[Workflow harness — computed task] …` 머리말 한 줄을 붙이고 모든 줄을 공백 두 칸
+  들여 쓴다(2026-11-24 기록 에이전트 전사 실측). 그래서 payload 줄은 줄 머리 공백을 허용해 찾고, meta-test 스텁도 같은 형태로 쓴다.
+- **한계**: 전사 형식(첫 `message.role == "user"` 줄의 문자열 또는 text 블록)에 기댄다 — 형식이 바뀌면 `lanes-payload-unresolved` 로
+  폴백한다(게이트가 열리지는 않는다). 실제 PR 게이트에서 RECORDED 가 나는지는 머지 뒤 첫 게이트에서 관찰한다.
+- **어디**: `preflight.js`(auto-record `payload`·기록 프롬프트), `receipt.sh`(CONTRACT `workflow-record-inputs`), `SKILL.md`(관측 로그 어휘),
+  `meta-test/engine.sh`(WR-h: 긴 lane 결과 + 명령의 긴 값을 망가뜨리는 기록 에이전트 스텁으로 끝-대-끝 RECORDED;
+  WR-i: 프롬프트 payload 출처 규칙; WR-j: 명령 길이). `ENGINE_VERSION` 2.6 → **2.7**(호환 — 새 거부 어휘, 2.6 옵션 형태는 그대로).

@@ -144,8 +144,10 @@ const gateAgent = (prompt, opts) => agent(`${NO_GIT_STATE}\n${prompt}`, opts);
 // ── 워크플로 안에서 기록 (DECISIONS.md 2026-11-24 「워크플로 안에서 기록」).
 // 집계가 PASS 면 메인 세션이 receiptLanes 를 파일로 옮겨 record 를 부르는 턴을 없애려고, 기록 에이전트가
 // `receipt.sh record` 한 명령을 돌린다. 워크플로 스크립트는 셸·파일 쓰기·자기 전사 경로가 없으므로:
-//   · lane 결과는 UTF-8 바이트의 base64 와 sha256 으로 넘긴다 — 에이전트가 옮겨 적다 한 글자라도 바뀌면
-//     receipt.sh 가 `lanes-digest-mismatch` 로 거부한다(분류 적재와 같은 원리, 같은 _sha256Hex·_utf8Encode).
+//   · lane 결과는 UTF-8 바이트의 base64 를 기록 에이전트 **프롬프트**의 `pf-record-lanes=` 줄에만 싣고, 명령에는 sha256 만
+//     넣는다. receipt.sh 가 표식으로 찾은 wf 디렉터리에서 기록 에이전트 전사의 첫 user 메시지(런타임이 쓴 프롬프트)를 읽어
+//     그 줄을 디코드하고 sha256 으로 대조한다 — 에이전트가 수 KB base64 를 명령에 옮겨 적다 바꾸는 경로가 없다
+//     (2.6 의 `--lanes-b64` 는 PR 게이트에서 옮겨 적기 오류로 거부됐다, DECISIONS.md 2026-11-24 「lane 결과는 전사에서 읽는다」).
 //   · 전사 디렉터리는 표식(marker)으로 찾게 한다 — 이 표식은 기록 에이전트의 프롬프트·명령에만 실리므로
 //     receipt.sh 가 최근 전사에서 그것을 grep 해 이 워크플로의 wf 디렉터리 하나를 고르고, 그 디렉터리로
 //     기존 전사 검증(no-lane-evidence·concealed-promotion·sequence-violated)을 그대로 돌린다.
@@ -168,7 +170,7 @@ function _b64Encode(bytes) {
     }
     return s;
 }
-// 기록할지와 그 명령. 반환: { skip } 또는 { marker, sha256, cmd }.
+// 기록할지와 그 명령. 반환: { skip } 또는 { marker, sha256, payload, cmd }. payload 는 프롬프트에만 싣는 줄이다.
 // nonce 는 args.runId || classification.runNonce, clsSha 는 분류 바이트 sha256(인라인 입력이면 분류 객체 직렬화의 sha256).
 function autoRecordPlan(o) {
     if (o.verdict !== 'PASS') return { skip: `verdict ${o.verdict}` };
@@ -184,8 +186,8 @@ function autoRecordPlan(o) {
     // record 는 commit|pr 만 받는다. all 분류는 commit 기록으로 받는다(lib.sh pf_ok_modes).
     const kind = o.mode === 'pr' ? 'pr' : 'commit';
     const cmd = `bash ${q(o.engineDir.replace(/\/+$/, '') + '/receipt.sh')} record ${kind} ${q(o.repo)} ` +
-        `--lanes-b64=${_b64Encode(bytes)} --lanes-sha256=${sha256} --transcripts-marker=${marker}`;
-    return { marker, sha256, cmd };
+        `--lanes-sha256=${sha256} --transcripts-marker=${marker}`;
+    return { marker, sha256, payload: `pf-record-lanes=${_b64Encode(bytes)}`, cmd };
 }
 // 기록 에이전트의 구조화 출력 → recorded. 성공은 종료코드 0 과 receipt.sh 의 `recorded: ` 줄 둘 다다.
 function autoRecordStatus(r) {
@@ -1654,7 +1656,9 @@ if (recPlan.skip) {
         `아래 명령 **하나만** 글자 그대로 실행하고, 종료코드·stdout·stderr 를 **고치지 말고** 돌려줘라.\n` +
             `다른 명령은 실행하지 마라. 실패해도 다시 시도하지 마라. 출력을 요약하거나 해석하지 마라.\n` +
             `전사 표식: ${recPlan.marker}\n` +
-            `- \`${recPlan.cmd}\``,
+            `- \`${recPlan.cmd}\`\n` +
+            `아래 줄은 receipt.sh 가 이 프롬프트에서 직접 읽는 입력이다. 명령에 옮겨 적지 마라.\n` +
+            `${recPlan.payload}`,
         { label: 'record', phase: 'Record', schema: RECORD_RESULT, model: 'haiku', effort: 'low' },
     ).catch(() => null);
     recorded = autoRecordStatus(r);
