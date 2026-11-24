@@ -144,8 +144,11 @@ const gateAgent = (prompt, opts) => agent(`${NO_GIT_STATE}\n${prompt}`, opts);
 // ── 워크플로 안에서 기록 (DECISIONS.md 2026-11-24 「워크플로 안에서 기록」).
 // 집계가 PASS 면 메인 세션이 receiptLanes 를 파일로 옮겨 record 를 부르는 턴을 없애려고, 기록 에이전트가
 // `receipt.sh record` 한 명령을 돌린다. 워크플로 스크립트는 셸·파일 쓰기·자기 전사 경로가 없으므로:
-//   · lane 결과는 UTF-8 바이트의 base64 와 sha256 으로 넘긴다 — 에이전트가 옮겨 적다 한 글자라도 바뀌면
-//     receipt.sh 가 `lanes-digest-mismatch` 로 거부한다(분류 적재와 같은 원리, 같은 _sha256Hex·_utf8Encode).
+//   · lane 결과는 **사람이 읽는 짧은 JSON 원문**을 heredoc 으로 stdin 에 넘기고(`--lanes-stdin`), 그 정규형의 sha256 을
+//     함께 넘긴다 — 에이전트가 옮겨 적다 내용이 한 글자라도 바뀌면 receipt.sh 가 `lanes-digest-mismatch` 로 거부한다.
+//     공백·키 순서는 정규형이 흡수한다. 2.6 의 base64(약 3~4KB)는 모델이 옮겨 적다 틀려 거부되는 일이 관찰됐다(DECISIONS.md
+//     2026-11-24 「기록 입력을 JSON 원문으로」). 페이로드는 _recordLanes 가 줄인다 — 모든 lane 의 reason 을 제어문자 없이 앞 160자로,
+//     커밋 훅이 커밋·PR 호출로 읽을 꼴(`git commit`·`gh pr create`)을 깨서.
 //   · 전사 디렉터리는 표식(marker)으로 찾게 한다 — 이 표식은 기록 에이전트의 프롬프트·명령에만 실리므로
 //     receipt.sh 가 최근 전사에서 그것을 grep 해 이 워크플로의 wf 디렉터리 하나를 고르고, 그 디렉터리로
 //     기존 전사 검증(no-lane-evidence·concealed-promotion·sequence-violated)을 그대로 돌린다.
@@ -157,6 +160,67 @@ const RECORD_RESULT = {
     type: 'object', required: ['exitCode', 'stdout'],
     properties: { exitCode: { type: 'integer' }, stdout: { type: 'string' }, stderr: { type: 'string' } },
 };
+// 기록 페이로드 — 문자열 값의 제어문자(C0·DEL·C1, 개행 포함)·U+2028/2029 를 공백으로, 짝 없는 서로게이트를 U+FFFD 로 바꾸고,
+// `reason` 은 앞 RECORD_REASON_MAX 코드포인트로 자른다(잘렸으면 끝에 `…`). 키는 그대로, status 등 다른 문자열은 같은 문자 치환만
+// 받고 자르지 않는다(상태 어휘에는 치환 대상 문자가 없다).
+// 이 정리 뒤에는 JS 정규형과 Python 정규형(receipt.sh)이 갈릴 수 있는 문자가 남지 않고, 값에 개행이 없어 heredoc 구분자 줄이
+// JSON 안에서 나올 수 없다. receipt.sh 의 기록 **검사**(lane-status·waived·concealed-promotion·sequence·no-lane-evidence)가 reason 에서
+// 읽는 것은 waived lane 의 비어 있음 여부뿐이다 — 공백 치환·자르기는 그것을 바꾸지 않는다. 관측 로그 laneDetail·머지 보고
+// (`receipt.sh report pr` 의 QA 줄)·verify 의 waived 안내 줄은 영수증의 reason 을 그대로 보이므로 거기에는 아래 축약·치환본이 나온다.
+const RECORD_REASON_MAX = 160;
+function _cleanStr(x) {
+    return x.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ')
+        .replace(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, '\ufffd');
+}
+function _cleanVal(v, key) {
+    if (typeof v === 'string') {
+        const c = _cleanStr(v);
+        if (key !== 'reason') return c;
+        const cps = Array.from(c);
+        return cps.length > RECORD_REASON_MAX ? cps.slice(0, RECORD_REASON_MAX).join('') + '…' : c;
+    }
+    if (Array.isArray(v)) return v.map(x => _cleanVal(x, null));
+    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, _cleanVal(x, k)]));
+    return v;
+}
+// 명령 문자열의 자유 텍스트는 커밋 훅(hooks/preflight-gate.sh)이 명령 전체에서 `git … commit`·`gh pr create` 를 찾는 대상이다 —
+// base64 때는 없던 경로다. 그래서 **모든 lane** 의 reason 에서 단어 `git`·`gh` 뒤의 공백류를 `-` 로 바꿔 훅의 패턴(`git\s`·
+// `gh\s+pr`)이 맞지 않게 한다 — 비우지 않는다(머지 보고·관측 로그가 사유를 쓴다). 비어 있지 않은 값은 비어 있지 않게 남는다.
+// 훅은 고치지 않는다.
+// CONTRACT: record-payload-not-a-git-call
+function _defuseGitWords(x) {
+    return x.replace(/\b(git|gh)\s+/g, '$1-');
+}
+function _recordLanes(receiptLanes) {
+    return Object.fromEntries(Object.entries(receiptLanes || {}).map(([l, v]) => {
+        const c = _cleanVal(v, null);
+        if (c && typeof c === 'object' && !Array.isArray(c) && typeof c.reason === 'string')
+            c.reason = _defuseGitWords(c.reason);
+        return [l, c];
+    }));
+}
+// 정규형 — 키를 코드포인트 순으로 정렬, 구분자 `,` `:`, 비ASCII 는 그대로. receipt.sh 의
+// json.dumps(sort_keys=True, separators=(',',':'), ensure_ascii=False) 와 같은 바이트다(meta-test WR-h 가 고정).
+// CONTRACT: lanes-canonical-json
+function _cpCmp(a, b) {
+    const A = Array.from(a), B = Array.from(b);
+    for (let i = 0; i < Math.min(A.length, B.length); i++) {
+        const d = A[i].codePointAt(0) - B[i].codePointAt(0);
+        if (d) return d;
+    }
+    return A.length - B.length;
+}
+function _canonJson(v) {
+    if (Array.isArray(v)) return '[' + v.map(_canonJson).join(',') + ']';
+    if (v && typeof v === 'object')
+        return '{' + Object.keys(v).sort(_cpCmp).map(k => JSON.stringify(k) + ':' + _canonJson(v[k])).join(',') + '}';
+    return JSON.stringify(v);
+}
+// 사람이 읽는 꼴 — lane 하나에 한 줄. 정규형과 공백만 다르다.
+function _recordLanesText(lanes) {
+    const ks = Object.keys(lanes).sort(_cpCmp);
+    return ks.length ? '{\n' + ks.map(k => JSON.stringify(k) + ':' + _canonJson(lanes[k])).join(',\n') + '\n}' : '{}';
+}
 function _b64Encode(bytes) {
     const A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
     let s = '';
@@ -168,7 +232,8 @@ function _b64Encode(bytes) {
     }
     return s;
 }
-// 기록할지와 그 명령. 반환: { skip } 또는 { marker, sha256, cmd }.
+// 기록할지와 그 명령. 반환: { skip } 또는 { marker, sha256, cmd, lanes }. cmd 는 heredoc 까지 든 여러 줄이다.
+// _b64Encode 는 2.6 형태(--lanes-b64) 호환 검사용으로 남는다 — 이 명령은 쓰지 않는다.
 // nonce 는 args.runId || classification.runNonce, clsSha 는 분류 바이트 sha256(인라인 입력이면 분류 객체 직렬화의 sha256).
 function autoRecordPlan(o) {
     if (o.verdict !== 'PASS') return { skip: `verdict ${o.verdict}` };
@@ -176,16 +241,18 @@ function autoRecordPlan(o) {
     if (o.autoRecord === false) return { skip: 'args.autoRecord === false' };
     if (typeof o.engineDir !== 'string' || !o.engineDir.startsWith('/'))
         return { skip: '분류에 engineDir 이 없다 (이 엔진보다 낡은 classify.sh)' };
-    const bytes = _utf8Encode(JSON.stringify(o.receiptLanes));
-    const sha256 = _sha256Hex(bytes);
+    const lanes = _recordLanes(o.receiptLanes);
+    const sha256 = _sha256Hex(_utf8Encode(_canonJson(lanes)));
     const tail = String(o.nonce || '').replace(/[^A-Za-z0-9_-]/g, '').slice(-24) || 'shared';
     const marker = `pf-record:${tail}:${String(o.clsSha).slice(0, 16)}`;
     const q = x => `'${String(x).replace(/'/g, `'\\''`)}'`;
     // record 는 commit|pr 만 받는다. all 분류는 commit 기록으로 받는다(lib.sh pf_ok_modes).
     const kind = o.mode === 'pr' ? 'pr' : 'commit';
+    // 구분자를 따옴표로 감싸 셸 해석이 없다. 본문 줄은 전부 `{` `"` `}` 로 시작하므로 구분자 줄과 겹치지 않는다.
     const cmd = `bash ${q(o.engineDir.replace(/\/+$/, '') + '/receipt.sh')} record ${kind} ${q(o.repo)} ` +
-        `--lanes-b64=${_b64Encode(bytes)} --lanes-sha256=${sha256} --transcripts-marker=${marker}`;
-    return { marker, sha256, cmd };
+        `--lanes-stdin --lanes-sha256=${sha256} --transcripts-marker=${marker} <<'PF_LANES'\n` +
+        `${_recordLanesText(lanes)}\nPF_LANES`;
+    return { marker, sha256, cmd, lanes };
 }
 // 기록 에이전트의 구조화 출력 → recorded. 성공은 종료코드 0 과 receipt.sh 의 `recorded: ` 줄 둘 다다.
 function autoRecordStatus(r) {
@@ -1651,10 +1718,11 @@ if (recPlan.skip) {
 } else {
     phase('Record');
     const r = await gateAgent(
-        `아래 명령 **하나만** 글자 그대로 실행하고, 종료코드·stdout·stderr 를 **고치지 말고** 돌려줘라.\n` +
-            `다른 명령은 실행하지 마라. 실패해도 다시 시도하지 마라. 출력을 요약하거나 해석하지 마라.\n` +
+        `아래 \`\`\`bash 블록의 명령을 heredoc 포함(첫 줄부터 마지막 \`PF_LANES\` 줄까지) **글자 그대로** Bash 호출 한 번으로 실행하고,\n` +
+            `종료코드·stdout·stderr 를 **고치지 말고** 돌려줘라. 다른 명령은 실행하지 마라. 실패해도 다시 시도하지 마라.\n` +
+            `출력을 요약하거나 해석하지 마라.\n` +
             `전사 표식: ${recPlan.marker}\n` +
-            `- \`${recPlan.cmd}\``,
+            '```bash\n' + recPlan.cmd + '\n```',
         { label: 'record', phase: 'Record', schema: RECORD_RESULT, model: 'haiku', effort: 'low' },
     ).catch(() => null);
     recorded = autoRecordStatus(r);

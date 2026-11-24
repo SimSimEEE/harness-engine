@@ -5798,7 +5798,7 @@ P="$HOME/.claude/skills/preflight" bash -c '. "$1"; pf_gate_args "$2" commit --r
 # END preflight-run
 
 # BEGIN workflow-record — 워크플로 안에서 기록(DECISIONS.md 2026-11-24 「워크플로 안에서 기록」)
-echo "== 워크플로 안에서 기록 (receipt.sh --lanes-b64 · --transcripts-marker · preflight.js 기록 에이전트) =="
+echo "== 워크플로 안에서 기록 (receipt.sh --lanes-stdin · --lanes-b64 · --transcripts-marker · preflight.js 기록 에이전트) =="
 WRD="$T/wfrec"; rm -rf "$WRD"; mkdir -p "$WRD"
 WRC="$WRD/cfg"                    # CLAUDE_CONFIG_DIR — 전사 루트는 $WRC/projects
 ssrepo "$WRD/r" plain; printf 'more\n' >> "$WRD/r/a.txt"; git -C "$WRD/r" add a.txt
@@ -5807,7 +5807,7 @@ WRL=$(python3 -c 'import json,sys; print(json.dumps({k:{"status":"PASS"} for k i
 # 전사 픽스처: wf 디렉터리 하나에 lane 전사(도구 실행 + 수락된 구조화 출력)와, 아직 결과가 없는 기록 에이전트
 # 전사(프롬프트에 표식 · 명령 하나 · 구조화 출력 없음), 그리고 정리 에이전트 전사를 둔다 — 실제 기록 시점의 모양이다.
 # 인자: <wf 디렉터리> <표식|-> <lane 전사를 쓸지 1|0>
-wrwf(){ python3 - "$1" "$2" "$3" "$WRD/r.cls.json" <<'ZW'
+wrwf(){ python3 - "$1" "$2" "$3" "${4:-$WRD/r.cls.json}" <<'ZW'
 import json, os, sys
 d, marker, with_lanes, cj = sys.argv[1], sys.argv[2], sys.argv[3] == '1', sys.argv[4]
 os.makedirs(d, exist_ok=True)
@@ -5904,6 +5904,202 @@ wrrec "" "" "$WRC/projects/p1/s1/subagents/workflows/wf_one" "--lanes-b64=$WRB" 
 # (위 거부들은 영수증을 지우지 않는다 — WR-a 의 기록이 남아 verify 를 통과한다)
 [ "$_wrv" = 0 ] && ok "WR-a: 워크플로 안 기록의 영수증이 verify 를 통과한다" || ng "WR-a: via workflow 영수증이 verify 에 막힌다" "verify rc=0"
 
+# (7) --lanes-stdin — JSON 원문을 stdin(heredoc)으로, 정규형 sha256 으로 대조한다 (DECISIONS.md 2026-11-24 「기록 입력을 JSON 원문으로」)
+#     정규형 = json.dumps(sort_keys=True, separators=(',',':'), ensure_ascii=False) 의 UTF-8 — receipt.sh 와 같은 식
+wrcan(){ printf '%s' "$1" | python3 -c 'import json,sys,hashlib; print(hashlib.sha256(json.dumps(json.loads(sys.stdin.read()), sort_keys=True, separators=(",",":"), ensure_ascii=False).encode()).hexdigest())'; }
+wrrecs(){ local _in="$1"; shift; rm -f "$T/wr.jsonl"; printf '%s' "$_in" | CLAUDE_CONFIG_DIR="$WRC" PF_LOG="$T/wr.jsonl" "$R" record commit "$WRD/r" "$@" > "$T/wr.out" 2>&1; WRRC=$?; }
+wrrlanes(){ python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["branches"]["main"]["commit"]["lanes"], sort_keys=True, separators=(",",":"), ensure_ascii=False))' \
+  "$(git -C "$WRD/r" rev-parse --absolute-git-dir)/claude-preflight.json" 2>"$T/py.err"; _pytb "$1"; }
+WRCS=$(wrcan "$WRL")
+rm -f "$(git -C "$WRD/r" rev-parse --absolute-git-dir)/claude-preflight.json"
+wrrecs "$WRL" --lanes-stdin "--lanes-sha256=$WRCS" "--transcripts-marker=$MK1"
+[ "$WRRC" = 0 ] && [ "$(wrlog $LINENO)" = "('recorded', None, 'workflow')" ] && [ "$(wrrcpt wf_one $LINENO)" = "workflow workflow True" ] \
+  && [ "$(wrrlanes $LINENO)" = "$(printf '%s' "$WRL" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin), sort_keys=True, separators=(",",":"), ensure_ascii=False))')" ] \
+  && ok "WR-h: --lanes-stdin JSON 원문 + 정규형 sha256 → 기록 (영수증 lanes = 보낸 JSON, via workflow)" \
+  || ng "WR-h: stdin JSON 기록이 통과하지 못했다 (rc=$WRRC $(wrlog $LINENO) $(tail -3 "$T/wr.out" | tr '\n' ' '))" "rc=0 recorded via workflow"
+# 내용 한 글자 차이 — 정규형이 다르면 거부
+wrrecs "$(printf '%s' "$WRL" | sed 's/PASS/PASs/')" --lanes-stdin "--lanes-sha256=$WRCS" "--transcripts-marker=$MK1"
+[ "$WRRC" = 1 ] && [ "$(wrlog $LINENO)" = "('refused', 'lanes-digest-mismatch', 'workflow')" ] \
+  && ok "WR-h: stdin JSON 의 내용이 한 글자 다르면 lanes-digest-mismatch 로 거부" \
+  || ng "WR-h: 내용이 바뀐 stdin JSON 이 받아졌다 (rc=$WRRC $(wrlog $LINENO))" "rc=1 lanes-digest-mismatch"
+# 공백·줄바꿈·키 순서만 다르면 통과 — 정규형이 같다. lane 마다 키 둘(status·reason)을 정렬 반대 순서로, lane 순서도 뒤집어 보낸다
+#  (선택 lane 이 하나여도 안쪽 키 순서가 정렬과 다르다)
+WRL3=$(printf '%s' "$WRL" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(json.dumps({k: {"status": "PASS", "reason": "공백·순서 시험"} for k in reversed(list(d))}, indent=3, ensure_ascii=False))')
+WRCS3=$(wrcan "$WRL3")
+wrrecs "$WRL3" --lanes-stdin "--lanes-sha256=$WRCS3" "--transcripts-marker=$MK1"
+[ "$(printf '%s' "$WRL3" | sed -n 3p | tr -d ' ')" = '"status":"PASS",' ] && [ "$WRRC" = 0 ] && [ "$(wrlog $LINENO)" = "('recorded', None, 'workflow')" ] \
+  && ok "WR-h: 공백·줄바꿈·키 순서만 다른 stdin JSON 은 같은 sha256 으로 통과" \
+  || ng "WR-h: 꼴만 다른 JSON 이 거부됐다 (rc=$WRRC $(wrlog $LINENO))" "rc=0 recorded"
+# JSON 이 아니거나 객체가 아니거나 해시가 없으면 거부
+wrrecs "${WRL%?}" --lanes-stdin "--lanes-sha256=$WRCS" "--transcripts-marker=$MK1"; _wrnj="$WRRC $(wrlog $LINENO)"
+wrrecs '["PASS"]' --lanes-stdin "--lanes-sha256=$(wrcan '["PASS"]')" "--transcripts-marker=$MK1"; _wrno="$WRRC $(wrlog $LINENO)"
+wrrecs "$WRL" --lanes-stdin "--transcripts-marker=$MK1"; _wrns="$WRRC $(wrlog $LINENO)"
+[ "$_wrnj" = "1 ('refused', 'lanes-digest-mismatch', 'workflow')" ] && [ "$_wrno" = "1 ('refused', 'lanes-digest-mismatch', 'workflow')" ] \
+  && [ "$_wrns" = "1 ('refused', 'lanes-digest-mismatch', 'workflow')" ] \
+  && ok "WR-h: stdin 이 JSON 이 아니거나·객체가 아니거나·--lanes-sha256 이 없으면 lanes-digest-mismatch 로 거부" \
+  || ng "WR-h: 깨진 stdin 입력이 받아졌다 (JSON 아님: $_wrnj · 객체 아님: $_wrno · 해시 없음: $_wrns)" "셋 다 rc=1 lanes-digest-mismatch"
+# 동시 사용 — 위치 인자 lanes·--lanes-b64 와 함께면 exit 2
+wrrecs "$WRL" "$WRL" --lanes-stdin "--lanes-sha256=$WRCS" "--transcripts-marker=$MK1"; _wrsp="$WRRC $(wrlog $LINENO)"
+wrrecs "$WRL" --lanes-stdin "--lanes-b64=$WRB" "--lanes-sha256=$WRCS" "--transcripts-marker=$MK1"; _wrsb="$WRRC $(wrlog $LINENO)"
+[ "$_wrsp" = "2 ('refused', 'lanes-digest-mismatch', 'workflow')" ] && [ "$_wrsb" = "2 ('refused', 'lanes-digest-mismatch', 'workflow')" ] \
+  && ok "WR-h: --lanes-stdin 을 위치 인자 lanes 나 --lanes-b64 와 함께 주면 exit 2 로 거부" \
+  || ng "WR-h: 두 lanes 입력을 함께 받았다 (위치: $_wrsp · b64: $_wrsb)" "둘 다 rc=2"
+"$R" verify commit "$WRD/r" x --lanes-stdin >/dev/null 2>&1; _wrvs=$?
+[ "$_wrvs" = 2 ] && ok "WR-h: --lanes-stdin 은 record 만 받는다 (verify 에 주면 exit 2)" || ng "WR-h: verify 가 --lanes-stdin 을 받았다 (rc=$_wrvs)" "rc=2"
+
+# (8) 워크플로 쪽 정리·정규형 — preflight.js 의 auto-record 구간을 떼어 실행한다.
+#     _recordLanes: 제어문자·U+2028/2029 → 공백, 짝 없는 서로게이트 → U+FFFD, reason 만 160 코드포인트로 자르고 `…`,
+#       모든 lane(waived 여부와 무관)의 reason 에서 `git`·`gh` 뒤 공백류를 `-` 로
+#     _canonJson: Python 정규형과 같은 바이트 (한글·따옴표·역슬래시·`…`·이모지·비BMP 키 정렬)
+PJW="$HOME/.claude/skills/preflight/preflight.js"
+{ sed -n '/BEGIN classification-load/,/END classification-load/p' "$PJW"; sed -n '/BEGIN auto-record/,/END auto-record/p' "$PJW"
+  cat <<'ZN'
+const long = '한\n글\t"따옴표"\\역슬래시\u2028\u2029\u007f\u0085\ud800끝' + 'y'.repeat(200);
+const emoji = 'a'.repeat(159) + '\u{1F600}' + 'bbbbb';
+const exact = 'z'.repeat(160);
+const W = r => ({ status: 'PASS', waived: true, originalStatus: 'WARNING', reason: r });
+const L = _recordLanes({
+    l1: W(long), l2: W(emoji), l3: W(exact),
+    l4: W('ok\nok'), l5: 'PASS', l6: { status: 'PASS' },
+    l7: { status: 'SKIPPED', reason: 'ran git commit then gh pr create' }, l9: { status: 'SKIPPED', reason: emoji },
+    l8: W('ok: git  commit,\tgh\tpr create, (git commit) /usr/bin/git commit; digit commit'),
+});
+const cps = s => Array.from(s);
+const bad = [];
+const BADCH = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+const strs = v => typeof v === 'string' ? [v] : v && typeof v === 'object' ? Object.values(v).flatMap(strs) : [];
+for (const x of strs(L)) if (BADCH.test(x)) bad.push('남은 제어문자·서로게이트: ' + JSON.stringify(x.slice(0, 40)));
+if (cps(L.l1.reason).length !== 161 || !L.l1.reason.endsWith('…') || !L.l1.reason.startsWith('한 글 "따옴표"\\역슬래시    \ufffd끝y')) bad.push('l1 자르기·치환: ' + JSON.stringify(L.l1.reason.slice(0, 30)));
+if (cps(L.l2.reason).length !== 161 || cps(L.l2.reason)[159] !== '\u{1F600}' || !L.l2.reason.endsWith('…')) bad.push('l2 이모지 경계');
+if (L.l3.reason !== exact) bad.push('l3 160자는 그대로');
+if (L.l4.reason !== 'ok ok' || L.l4.waived !== true || L.l4.originalStatus !== 'WARNING') bad.push('l4 waived 키 보존');
+if (L.l5 !== 'PASS' || JSON.stringify(L.l6) !== '{"status":"PASS"}' || L.l1.status !== 'PASS' || L.l7.status !== 'SKIPPED') bad.push('status 보존');
+if (L.l7.reason !== 'ran git-commit then gh-pr create') bad.push('l7 waived 아닌 lane 도 같은 치환: ' + JSON.stringify(L.l7.reason));
+if (L.l9.reason !== L.l2.reason) bad.push('l9 waived 아닌 lane 도 같은 축약');
+if (L.l8.reason !== 'ok: git-commit, gh-pr create, (git-commit) /usr/bin/git-commit; digit commit') bad.push('l8 git·gh 뒤 공백 치환: ' + JSON.stringify(L.l8.reason));
+// 정규형 — 비BMP 키(😀)와 BMP 끝 키(\uffff)는 코드포인트 순이어야 Python sort_keys 와 같다
+const sample = Object.assign({ '\u{1F600}키': { status: 'PASS', reason: '😀 …' }, '\uffff': 'PASS', 'B': { reason: 'q"\\', status: 'PASS' } }, L);
+const canon = _canonJson(sample);
+console.log(JSON.stringify({ bad, text: _recordLanesText(sample), canon, sha: _sha256Hex(_utf8Encode(canon)) }));
+ZN
+} > "$T/wr-norm.cjs"
+node "$T/wr-norm.cjs" > "$T/wr-norm.out" 2>"$T/py.err"  # py-err-front
+python3 - "$T/wr-norm.out" <<'ZP' 2>>"$T/py.err" && _wrn=0 || _wrn=1
+import json, sys, hashlib
+d = json.load(open(sys.argv[1]))
+assert not d['bad'], d['bad']
+py = lambda o: json.dumps(o, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode('utf-8')
+assert py(json.loads(d['text'])) == d['canon'].encode('utf-8'), (py(json.loads(d['text']))[:200], d['canon'][:200])
+assert py(json.loads(d['canon'])) == d['canon'].encode('utf-8')
+assert hashlib.sha256(d['canon'].encode('utf-8')).hexdigest() == d['sha']
+assert '\n' in d['text'] and d['text'] != d['canon']          # 사람이 읽는 꼴은 정규형과 공백만 다르다
+for ch in ('한', '"', '\\\\', '…', '\U0001F600'): assert ch in d['canon'], ch
+ZP
+[ "$_wrn" = 0 ] && ok "WR-h: 기록 페이로드 정리(제어문자·U+2028/2029·서로게이트 제거, reason 160자+…, 이모지 경계·waived 키·status 보존)와 JS 정규형 == Python 정규형 (한글·따옴표·역슬래시·…·이모지·비BMP 키)" \
+  || ng "WR-h: 정리·정규형이 어긋난다$(_diag "$T/py.err") $(head -c 300 "$T/wr-norm.out")" "bad 없음 · 정규형 바이트 같음"
+
+# (9) 끝-대-끝 — autoRecordPlan 이 낸 heredoc 명령을 bash 로 그대로 실행: 특수문자·긴 reason 이 든 lanes 가 기록되고,
+#     영수증의 reason 은 축약본이며, 그 영수증이 verify 를 통과한다
+MK5="pf-record:e2e555:0123456789abcdef"
+wrwf "$WRC/projects/p1/s5/subagents/workflows/wf_e2e" "$MK5" 1
+{ sed -n '/BEGIN classification-load/,/END classification-load/p' "$PJW"; sed -n '/BEGIN auto-record/,/END auto-record/p' "$PJW"
+  cat <<'ZE'
+const [cj, eng, repo] = process.argv.slice(2);
+const lanes = Object.keys(JSON.parse(require('fs').readFileSync(cj, 'utf8')).selected);
+const rl = Object.fromEntries(lanes.map((l, i) => [l, { status: 'PASS', waived: true, originalStatus: 'WARNING',
+    reason: `사유 ${i} "인용" \\ 끝…\u{1F600}\n둘째 줄 PF_LANES\ngit commit · gh pr create ` + '가'.repeat(200) }]));
+const p = autoRecordPlan({ verdict: 'PASS', measureOnly: false, autoRecord: undefined, engineDir: eng, receiptLanes: rl, mode: 'commit', repo, nonce: 'e2e555', clsSha: '0123456789abcdef0000' });
+console.log(JSON.stringify(p));
+ZE
+} > "$T/wr-e2e.cjs"
+node "$T/wr-e2e.cjs" "$WRD/r.cls.json" "$(dirname "$R")" "$WRD/r" > "$T/wr-e2e.json" 2>"$T/py.err"  # py-err-front
+WRWANT=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); open(sys.argv[2], "w").write(d["cmd"]); print(json.dumps(d["lanes"], sort_keys=True, separators=(",",":"), ensure_ascii=False))' "$T/wr-e2e.json" "$T/wr-cmd.sh" 2>>"$T/py.err")
+WRCMD=$(cat "$T/wr-cmd.sh" 2>/dev/null)
+rm -f "$(git -C "$WRD/r" rev-parse --absolute-git-dir)/claude-preflight.json" "$T/wr.jsonl"
+CLAUDE_CONFIG_DIR="$WRC" PF_LOG="$T/wr.jsonl" bash -c "$WRCMD" > "$T/wr.out" 2>&1; WRRC=$?
+"$R" verify commit "$WRD/r" >/dev/null 2>&1 && _wrv=0 || _wrv=1
+[ "$WRRC" = 0 ] && [ "$(wrlog $LINENO)" = "('recorded', None, 'workflow')" ] && [ "$(wrrlanes $LINENO)" = "$WRWANT" ] \
+  && [ "$(printf '%s' "$WRWANT" | python3 -c 'import json,sys; r=[v["reason"] for v in json.load(sys.stdin).values()]; print(bool(r) and all(len(x) == 161 and x.endswith("…") and "\n" not in x and "PF_LANES" in x and "git-commit · gh-pr create" in x for x in r))' 2>"$T/wr-chk.err")" = True ] \
+  && printf '%s' "$WRCMD" | grep -q "<<'PF_LANES'$" \
+  && [ "$_wrv" = 0 ] \
+  && ok "WR-h: autoRecordPlan 의 heredoc 명령을 그대로 실행하면 특수문자·긴 reason 이 든 lanes 가 축약본으로 기록되고 verify 를 통과한다 (끝-대-끝)" \
+  || ng "WR-h: 워크플로가 낸 heredoc 명령이 기록되지 않았다 (rc=$WRRC $(wrlog $LINENO) verify=$_wrv $(tail -3 "$T/wr.out" | tr '\n' ' ') $(_diag "$T/py.err") $(_diag "$T/wr-chk.err"))" "rc=0 recorded · 영수증 lanes = 축약 페이로드 · verify 0"
+
+# (10) 기록 명령이 커밋 훅에 커밋·PR 로 읽히지 않는다 (CONTRACT: record-payload-not-a-git-call) — reason 에 `git commit`·
+#      `gh pr create` 가 든 lanes(waived 포함·미포함)로 autoRecordPlan 이 낸 명령을 실제 훅(hooks/preflight-gate.sh)에 넣는다.
+#      훅이 커밋·PR 로 본 명령은 판정(allow·deny)을 관측 로그(PF_LOG)에 남긴다 — 기록 명령은 판정 없이 지나가야 한다(출력·로그 0).
+#      대조군: 같은 레포의 평범한 커밋·PR 생성은 훅이 판정해 로그를 남긴다 — 훅 호출 자체가 살아 있음을 보인다.
+{ sed -n '/BEGIN classification-load/,/END classification-load/p' "$PJW"; sed -n '/BEGIN auto-record/,/END auto-record/p' "$PJW"
+  cat <<'ZK'
+const [eng, repo] = process.argv.slice(2);
+const r = 'ran git commit -m x && gh pr create --title y; (git commit) `git commit` /usr/bin/git commit\n git commit';
+const rl = { a: { status: 'PASS', reason: r }, b: { status: 'PASS', waived: true, originalStatus: 'WARNING', reason: r },
+             c: { status: 'SKIPPED', reason: 'gh pr create' }, d: { status: 'PASS', waived: true, originalStatus: 'WARNING', reason: 'gh  pr\tcreate' } };
+console.log(autoRecordPlan({ verdict: 'PASS', measureOnly: false, engineDir: eng, receiptLanes: rl, mode: 'pr', repo, nonce: 'hook', clsSha: '0123456789abcdef' }).cmd);
+ZK
+} > "$T/wr-hook.cjs"
+node "$T/wr-hook.cjs" "$(dirname "$R")" "$WRD/r" > "$T/wr-hook.cmd" 2>"$T/py.err"  # py-err-front
+WRHK="$HOME/.claude/hooks/preflight-gate.sh"
+_wrhk=$(python3 - "$WRHK" "$T/wr-hook.cmd" "$WRD/r" "$T/wr-hook.jsonl" <<'ZH' 2>>"$T/py.err"
+import json, os, subprocess, sys
+hook, cmdf, repo, log = sys.argv[1:]
+cmd = open(cmdf).read().rstrip('\n')
+def dec(c):
+    if os.path.exists(log): os.remove(log)
+    r = subprocess.run(['bash', hook], input=json.dumps({'tool_input': {'command': c}, 'cwd': repo}),
+                       capture_output=True, text=True, env={**os.environ, 'PF_LOG': log})
+    o = r.stdout.strip()
+    d = json.loads(o)['hookSpecificOutput']['permissionDecision'] if o else 'allow'
+    n = sum(1 for l in open(log) if l.strip()) if os.path.exists(log) else 0
+    return d, n
+assert 'PF_LANES' in cmd, cmd[:300]   # 판정은 훅이 한다 — 문자열 검사로 대신하지 않는다
+c1, c2 = dec(f'git -C {repo} ' + 'com' + 'mit -m x'), dec(f'cd {repo} && gh pr ' + 'cre' + 'ate --title x')
+print(*dec(cmd), c1[1] > 0 and c2[1] > 0)
+ZH
+)
+[ "$_wrhk" = "allow 0 True" ] \
+  && ok "WR-h: reason 에 git commit·gh pr create 가 든 lanes(waived 포함·미포함)로 만든 기록 명령을 커밋 훅이 커밋·PR 로 읽지 않는다 (판정·로그 0, 대조군 커밋·PR 은 판정됨)" \
+  || ng "WR-h: 기록 명령이 커밋 훅에 커밋·PR 로 읽힌다 ($_wrhk $(_diag "$T/py.err"))" "allow 0 True"
+
+# (11) 머지 보고 — 워크플로 안 PR 기록(heredoc)의 영수증으로 `receipt.sh report pr` 이 SKIPPED qa-runner 의 축약·치환 사유를 보인다.
+#      reason 을 비우면 보고가 `건너뜀 (SKIPPED)` 로 바뀐다. 이 픽스처의 분류는 qa-runner 를 고르지 않으므로(notSelected 사유가 먼저
+#      나온다) 기록 뒤 영수증의 분류에서 qa-runner 의 notSelected 만 지운다 — 고른 QA 를 건너뛴 경우를 흉내 낸다(lanes 는 그대로).
+WRP="$WRD/p"; rm -rf "$WRP" "$WRD/p-origin.git"
+git init -q --bare -b main "$WRD/p-origin.git"
+git init -q -b main "$WRP"; git -C "$WRP" config user.email t@t; git -C "$WRP" config user.name t
+git -C "$WRP" remote add origin "$WRD/p-origin.git"
+printf 'a\n' > "$WRP/a.txt"; git -C "$WRP" add -A; git -C "$WRP" "$G" -qm init; git -C "$WRP" push -q origin main 2>/dev/null
+git -C "$WRP" remote set-head origin main 2>/dev/null; git -C "$WRP" checkout -q -b feat/wr
+printf 'b\n' >> "$WRP/a.txt"; git -C "$WRP" add -A; git -C "$WRP" "$G" -qm c1
+VAULT_EXEMPT="wr/p-origin" "$CL" "$WRP" pr > "$WRD/p.cls.json" 2>"$T/wr-cl.err"
+MK6="pf-record:prrep6:0123456789abcdef"
+wrwf "$WRC/projects/p1/s6/subagents/workflows/wf_pr" "$MK6" 1 "$WRD/p.cls.json"
+{ sed -n '/BEGIN classification-load/,/END classification-load/p' "$PJW"; sed -n '/BEGIN auto-record/,/END auto-record/p' "$PJW"
+  cat <<'ZQ'
+const [cj, eng, repo] = process.argv.slice(2);
+const sel = Object.keys(JSON.parse(require('fs').readFileSync(cj, 'utf8')).selected);
+const rl = Object.fromEntries(sel.map(l => [l, { status: 'PASS' }]));
+rl['qa-runner'] = { status: 'SKIPPED', reason: 'dev 미배포 — git commit 뒤 배포 예정\n' + '나'.repeat(200) };
+const p = autoRecordPlan({ verdict: 'PASS', measureOnly: false, engineDir: eng, receiptLanes: rl, mode: 'pr', repo, nonce: 'prrep6', clsSha: '0123456789abcdef' });
+console.log(JSON.stringify({ cmd: p.cmd, want: p.lanes['qa-runner'].reason }));
+ZQ
+} > "$T/wr-pr.cjs"
+node "$T/wr-pr.cjs" "$WRD/p.cls.json" "$(dirname "$R")" "$WRP" > "$T/wr-pr.json" 2>"$T/py.err"  # py-err-front
+WRPWANT=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); open(sys.argv[2], "w").write(d["cmd"]); print(d["want"])' "$T/wr-pr.json" "$T/wr-pr.sh" 2>>"$T/py.err")
+rm -f "$T/wr.jsonl"; CLAUDE_CONFIG_DIR="$WRC" PF_LOG="$T/wr.jsonl" bash "$T/wr-pr.sh" > "$T/wr.out" 2>&1; WRRC=$?
+_wrpl="$(wrlog $LINENO)"
+python3 - "$(git -C "$WRP" rev-parse --absolute-git-dir)/claude-preflight.json" <<'ZR' 2>"$T/wr-chk.err"
+import json, sys
+p = sys.argv[1]; d = json.load(open(p)); e = d["branches"]["feat/wr"]["pr"]
+(e.get("classification") or {}).get("notSelected", {}).pop("qa-runner", None)
+json.dump(d, open(p, "w"))
+ZR
+_wrrep=$("$R" report pr "$WRP" 2>&1)
+[ "$WRRC" = 0 ] && [ "$_wrpl" = "('recorded', None, 'workflow')" ] && [ -n "$WRPWANT" ] \
+  && printf '%s' "$WRPWANT" | grep -q 'git-commit' && printf '%s\n' "$_wrrep" | grep -qF "QA: 건너뜀 ($WRPWANT)" \
+  && ok "WR-h: 워크플로 안 PR 기록의 영수증으로 머지 보고가 SKIPPED qa-runner 의 축약·치환 사유를 보인다 (reason 을 비우지 않는다)" \
+  || ng "WR-h: 머지 보고가 기록된 QA 사유를 보이지 않는다 (rc=$WRRC $_wrpl | $(printf '%s' "$_wrrep" | tr '\n' ' ' | head -c 300) | $(tail -3 "$T/wr.out" | tr '\n' ' ') $(_diag "$T/wr-chk.err"))" "QA: 건너뜀 (<축약·치환 사유>)"
+
 # (6) preflight.js — PASS 면 기록 에이전트를 부르고 FAIL·측정 전용·autoRecord=false 면 안 부른다.
 #     기록 에이전트 스텁은 실제 런타임처럼 전사(프롬프트)를 wf 디렉터리에 남기고 받은 명령을 **그대로 실행**한다 —
 #     워크플로 코드가 낸 base64·sha256·표식이 receipt.sh 의 검증과 같은 바이트인지 끝-대-끝으로 본다.
@@ -5923,8 +6119,9 @@ async function agent(prompt, opts) {
     if (opts.label === 'record') {
         fs.mkdirSync(wfdir, { recursive: true });
         fs.writeFileSync(path.join(wfdir, `agent-rec${n}.jsonl`), JSON.stringify({ timestamp: '2026-11-24T10:00:30Z', message: { role: 'user', content: prompt } }) + '\n');
-        const m = prompt.match(/^- `(.*)`$/m);
-        if (!m) return { exitCode: 99, stdout: '', stderr: 'no command line' };
+        // 프롬프트의 ```bash 블록 전체(heredoc 포함)를 그대로 실행한다 — 실제 기록 에이전트가 할 일이다
+        const m = prompt.match(/^```bash\n([\s\S]*?)\n```$/m);
+        if (!m) return { exitCode: 99, stdout: '', stderr: 'no command block' };
         const p = spawnSync('bash', ['-c', m[1]], { encoding: 'utf8' });
         return { exitCode: p.status, stdout: p.stdout, stderr: p.stderr };
     }
@@ -5957,7 +6154,7 @@ wrjs pass
 [ "$(wrjk '"record" in d["calls"], d["calls"][-1], d["recorded"]["status"]' $LINENO)" = "True record RECORDED" ] \
   && [ "$(wrlog $LINENO)" = "('recorded', None, 'workflow')" ] && [ "$(wrrcpt wf_js_pass $LINENO)" = "workflow workflow True" ] \
   && [ "$(wrjk '"record 를 다시 부르지 마라" in d["next"] and "기록: RECORDED" in d["report"]' $LINENO)" = True ] \
-  && ok "WR-f: PASS 면 기록 에이전트가 마지막에 돌고, 워크플로가 낸 base64·sha256·표식으로 receipt.sh 가 기록한다 (끝-대-끝, next 는 record 재호출 금지)" \
+  && ok "WR-f: PASS 면 기록 에이전트가 마지막에 돌고, 워크플로가 낸 heredoc JSON·정규형 sha256·표식으로 receipt.sh 가 기록한다 (끝-대-끝, next 는 record 재호출 금지)" \
   || ng "WR-f: PASS 인데 워크플로 안 기록이 되지 않았다 ($(head -c 400 "$T/wr-js.out") $(_diag "$T/py.err") log=$(wrlog $LINENO))" "record 호출 · RECORDED · via workflow"
 for _wm in fail measure off; do
   wrjs "$_wm"

@@ -9,8 +9,9 @@
 #
 # usage:
 #   receipt.sh record commit|pr <dir> [lanes-json|@file] [classify-json|@file] [transcripts-dir]
-#   receipt.sh record commit|pr <dir> --lanes-b64=<b64> --lanes-sha256=<hex> --transcripts-marker=<표식>
-#     워크플로 안 기록(preflight.js 기록 에이전트). lanes 는 디코드 바이트의 sha256 이 맞을 때만, 전사 디렉터리는
+#   receipt.sh record commit|pr <dir> --lanes-stdin --lanes-sha256=<hex> --transcripts-marker=<표식>  <<'PF_LANES' … PF_LANES
+#   receipt.sh record commit|pr <dir> --lanes-b64=<b64> --lanes-sha256=<hex> --transcripts-marker=<표식>   (2.6 형태, 하위 호환)
+#     워크플로 안 기록(preflight.js 기록 에이전트). lanes 는 sha256 이 맞을 때만(stdin 은 JSON 정규형, b64 는 디코드 바이트), 전사 디렉터리는
 #     표식이 든 최근 wf 디렉터리가 정확히 하나일 때만 받는다. 그 뒤 검사는 위 형태와 같다. 로그·영수증 via=workflow.
 #     게이트 결과 기록 (스테이징 후). transcripts-dir 을 넘기면 전사 기반 검사 셋이 켜진다
 #     (no-lane-evidence · concealed-promotion · sequence-violated). 넘겼는데 못 읽으면 거부한다.
@@ -38,14 +39,19 @@ set -uo pipefail
 
 # 워크플로 안 기록(preflight.js 의 기록 에이전트, DECISIONS.md 2026-11-24 「워크플로 안에서 기록」)의 입력은 이름 붙은
 #  옵션이다 — 위치 인자 자리와 섞이지 않게 먼저 떼어 낸다. 옵션이 있는데 위치 인자로도 같은 것을 주면 record 가 거부한다.
-#   --lanes-b64=<base64> --lanes-sha256=<hex>  lanes-json 의 UTF-8 바이트와 그 sha256. 다르면 `lanes-digest-mismatch`
+#   --lanes-stdin --lanes-sha256=<hex>  stdin 의 lanes-json 을 파싱해 **정규형**(키 정렬 · 구분자 `,` `:` · 비ASCII 그대로 UTF-8 —
+#     `json.dumps(sort_keys=True, separators=(',',':'), ensure_ascii=False)`)의 sha256 과 대조한다. 공백·키 순서 차이는 통과,
+#     내용 차이·JSON 아님·객체 아님은 `lanes-digest-mismatch`. preflight.js 의 _canonJson 이 같은 바이트를 낸다(meta-test WR-h)
+#   --lanes-b64=<base64> --lanes-sha256=<hex>  lanes-json 의 UTF-8 바이트와 그 sha256. 다르면 `lanes-digest-mismatch` (2.6 형태 — 메인·옛 워크플로)
+#   lanes 입력(위치 인자 · --lanes-b64 · --lanes-stdin)은 하나만 — 둘 이상이면 exit 2
 #   --transcripts-marker=pf-record:<꼬리>:<16hex>  최근 워크플로 전사에서 이 표식이 있는 wf 디렉터리 **하나**를 찾아
 #     전사 디렉터리로 쓴다. 0개·2개 이상이면 `transcripts-marker-unresolved`. 이 기록은 관측 로그·영수증에 `via: workflow` 로 남는다
-lanes_b64=""; lanes_sha=""; tmarker=""; _opt_b64=0; _opt_sha=0; _opt_marker=0
+lanes_b64=""; lanes_sha=""; tmarker=""; lanes_stdin=""; _opt_b64=0; _opt_sha=0; _opt_marker=0; _opt_stdin=0
 _pos=()
 for _a in "$@"; do
     case "$_a" in
         --lanes-b64=*) lanes_b64="${_a#*=}"; _opt_b64=1 ;;
+        --lanes-stdin) _opt_stdin=1 ;;
         --lanes-sha256=*) lanes_sha="${_a#*=}"; _opt_sha=1 ;;
         --transcripts-marker=*) tmarker="${_a#*=}"; _opt_marker=1 ;;
         *) _pos+=("$_a") ;;
@@ -53,9 +59,12 @@ for _a in "$@"; do
 done
 set -- ${_pos[@]+"${_pos[@]}"}
 cmd="${1:-}"; kind="${2:-}"; dir="${3:-$PWD}"; lanes="${4:-}"; classify="${5:-}"; transcripts="${6:-}"
-if [ "$cmd" != record ] && [ $((_opt_b64 + _opt_sha + _opt_marker)) -gt 0 ]; then
-    echo "--lanes-b64·--lanes-sha256·--transcripts-marker 는 record 만 받는다" >&2; exit 2
+if [ "$cmd" != record ] && [ $((_opt_b64 + _opt_sha + _opt_marker + _opt_stdin)) -gt 0 ]; then
+    echo "--lanes-stdin·--lanes-b64·--lanes-sha256·--transcripts-marker 는 record 만 받는다" >&2; exit 2
 fi
+# stdin 은 아래 python 이 스크립트(heredoc)를 읽는 자리이고 그 앞의 plan.sh 등도 같은 stdin 을 물려받는다 — 가장 먼저 읽어 둔다.
+#  터미널이면 읽지 않는다(빈 입력 → 아래에서 lanes-digest-mismatch).
+if [ "$_opt_stdin" = 1 ] && [ ! -t 0 ]; then lanes_stdin=$(cat); fi
 
 gitdir=$(git -C "$dir" rev-parse --absolute-git-dir 2>/dev/null) || { echo "not a git repo"; exit 1; }
 receipt="$gitdir/claude-preflight.json"
@@ -97,6 +106,7 @@ record)
     KIND="$kind" OKMODES="$(pf_ok_modes "$kind")" IT="$it" HEAD_SHA="$head" BRANCH="$branch" TS="$ts" R="$receipt" \
     LANES="$lanes" CLASSIFY="$classify" PLANJSON="$planjson" PLANQA="$planqa" PLANCLAIMS="$planclaims" COMMON_DIR="$common_dir" DIR="$dir" REPO_TOP="$repo_top" TRANSCRIPTS="$transcripts" ENGINE_VER="$engver" \
     VIA="${PF_RECORD_VIA:-}" OPT_B64="$_opt_b64" OPT_SHA="$_opt_sha" OPT_MARKER="$_opt_marker" LANES_B64="$lanes_b64" LANES_SHA="$lanes_sha" \
+    OPT_STDIN="$_opt_stdin" LANES_STDIN="$lanes_stdin" \
     TMARKER="$tmarker" POS_LANES="${4:-}" POS_TRANSCRIPTS="$transcripts" SECRET_SCAN_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/secret-scan.sh" \
     PF_CATS="$(pf_category_roots)" python3 - <<'PY'
 import json, os, re, subprocess, sys
@@ -152,9 +162,44 @@ if _OPT_MARKER:
     VIA = os.environ['VIA'] = 'workflow'
 
 # CONTRACT: workflow-record-inputs
-# 워크플로 안 기록(preflight.js 기록 에이전트)의 두 입력. lane 결과는 모델이 옮겨 적은 base64 라 sha256 으로 대조하고,
-# 전사 디렉터리는 기록 에이전트 프롬프트에만 실린 표식으로 찾는다. 둘 다 통과하면 위치 인자 형태와 같은 검사로 간다.
-if os.environ.get('OPT_B64') == '1' or os.environ.get('OPT_SHA') == '1':
+# 워크플로 안 기록(preflight.js 기록 에이전트)의 두 입력. lane 결과는 모델이 옮겨 적은 JSON 원문(--lanes-stdin) 또는
+# base64(--lanes-b64, 2.6 형태)라 sha256 으로 대조하고, 전사 디렉터리는 기록 에이전트 프롬프트에만 실린 표식으로 찾는다.
+# 둘 다 통과하면 위치 인자 형태와 같은 검사로 간다.
+_n_lanes_in = sum([bool(os.environ.get('POS_LANES')), os.environ.get('OPT_B64') == '1', os.environ.get('OPT_STDIN') == '1'])
+if _n_lanes_in > 1:
+    print("게이트 기록 거부 — lanes 를 위치 인자·--lanes-b64·--lanes-stdin 중 둘 이상으로 줬다 (하나만 준다)")
+    _log('record', 'refused', reason='lanes-digest-mismatch', detail='both-inputs')
+    sys.exit(2)
+if os.environ.get('OPT_STDIN') == '1':
+    import hashlib
+    _want = (os.environ.get('LANES_SHA') or '').strip().lower()
+    _obj, _got, _why = None, None, None
+    try:
+        _obj = json.loads(os.environ.get('LANES_STDIN') or '')
+    except Exception:
+        _why = 'not-json'
+    if _why is None and not isinstance(_obj, dict):
+        _why = 'not-object'
+    if _why is None:
+        # 정규형 — preflight.js _canonJson 과 같은 바이트여야 한다(CONTRACT: lanes-canonical-json, meta-test WR-h)
+        try:
+            _canon = json.dumps(_obj, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode('utf-8')
+            _got = hashlib.sha256(_canon).hexdigest()
+        except Exception:
+            _why = 'not-canonical'
+    if _why is None and (not re.fullmatch(r'[0-9a-f]{64}', _want) or _got != _want):
+        _why = 'digest'
+    if _why is not None:
+        print("게이트 기록 거부 — --lanes-stdin 의 JSON 정규형이 --lanes-sha256 과 맞지 않는다"
+              + ("" if _why == 'digest' else f" ({_why})"))
+        print(f"    기대 {_want[:12] or '(없음)'} · 받은 {(_got or '(계산 못함)')[:12]}")
+        print("  워크플로가 낸 lane 결과가 옮겨지다 바뀌었다. 워크플로 결과의 receiptLanes 를 파일로 써서 @파일 로 기록해라.")
+        _log('record', 'refused', reason='lanes-digest-mismatch', declared=_want[:12], got=(_got or '')[:12],
+             **({} if _why == 'digest' else {'detail': _why}))
+        sys.exit(1)
+    os.environ['LANES'] = _canon.decode('utf-8')
+    lanes = _obj
+elif os.environ.get('OPT_B64') == '1' or os.environ.get('OPT_SHA') == '1':
     import base64, hashlib
     if os.environ.get('POS_LANES'):
         print("게이트 기록 거부 — lanes 를 위치 인자와 --lanes-b64 로 함께 줬다 (하나만 준다)")

@@ -422,3 +422,42 @@ a=70 a_sessions=13 b=62 main=202 home=45 norepo=78 path_outside_repo=9
 - **어디**: `preflight.js`(BEGIN auto-record · CONTRACT `auto-record-pass-only`, 결과 `recorded`), `receipt.sh`(CONTRACT
   `workflow-record-inputs`, via 어휘), `classify.sh`(`engineDir`), `SKILL.md`(§ 4·관측 로그), `meta-test/engine.sh`(WR-a~g).
   `ENGINE_VERSION` 2.5 → **2.6**(호환되는 추가 — 새 옵션·결과 키, 위치 인자 형태는 그대로).
+
+### 기록 입력을 JSON 원문으로
+
+- **왜**: 2.6 의 기록 에이전트는 lane 결과를 약 3~4KB base64(`--lanes-b64`)로 명령에 옮겨 적는다. 배포 직후 실제 실행에서
+  `lanes-digest-mismatch` 거부가 되풀이됐다 — 에이전트가 base64 를 옮기다 틀렸다(관찰). 무작위 문자열은 모델이
+  옮겨 적기 어렵다. 폴백(메인 기록)은 정상 동작했지만 그만큼 메인 턴이 다시 든다.
+- **무엇**: 기록 명령이 lane 결과를 **사람이 읽는 짧은 JSON 원문**으로 넘긴다 —
+  `bash <engineDir>/receipt.sh record commit|pr <repo> --lanes-stdin --lanes-sha256=<hex> --transcripts-marker=<표식> <<'PF_LANES'`
+  다음 줄부터 JSON(lane 하나에 한 줄), 마지막 줄 `PF_LANES`. 구분자를 따옴표로 감싸 셸 해석이 없다. 기록 에이전트 프롬프트는
+  "```bash 블록의 명령을 heredoc 포함 글자 그대로 Bash 호출 한 번으로 실행" 이다. `receipt.sh record` 는 `--lanes-stdin` 을 새로 받는다:
+  stdin 을 JSON 으로 읽고 정규형 sha256 을 `--lanes-sha256` 과 대조해, 맞으면 그 JSON 을 lanes 로 쓴다. JSON 아님·객체 아님·해시
+  불일치·해시 없음은 기존 사유 `lanes-digest-mismatch`(log `detail` 로 `not-json`·`not-object`·`not-canonical` 구분)다 — 새 사유를
+  만들지 않았다: 어느 것이든 "워크플로가 낸 lane 결과가 그대로 오지 않았다" 이고 대응(메인 기록)이 같다. 위치 인자 lanes·`--lanes-b64`·
+  `--lanes-stdin` 중 둘 이상이면 exit 2. `--lanes-b64` 는 그대로 받는다(하위 호환 — 메인 폴백·2.6 워크플로).
+- **정규형**: 키 정렬(코드포인트 순), 구분자 `,` `:`, 비ASCII 는 그대로 UTF-8 — Python 은
+  `json.dumps(sort_keys=True, separators=(',',':'), ensure_ascii=False)`, JS 는 `preflight.js` `_canonJson`(재귀 키 정렬 + `JSON.stringify`).
+  그래서 공백·줄바꿈·키 순서가 달라도 통과하고 내용이 한 글자라도 다르면 거부한다. JS 와 Python 이 갈릴 수 있는 문자(짝 없는 서로게이트 —
+  JS 는 `\udXXX` 이스케이프, Python 은 UTF-8 인코딩 실패)는 아래 정리에서 미리 없앤다. 같은 바이트임은 meta-test WR-h 가 한글·따옴표·
+  역슬래시·`…`·이모지·비BMP 키 정렬로 고정한다(CONTRACT `lanes-canonical-json`).
+- **축약 범위**: `_recordLanes` 가 lane 값의 문자열에서 제어문자(C0·DEL·C1, 개행 포함)·U+2028/2029 를 공백으로, 짝 없는 서로게이트를
+  U+FFFD 로 바꾼다. 그다음 **모든 lane**(waived 여부와 무관)의 `reason` 을 앞 160 코드포인트로 자르고(잘렸으면 끝에 `…`), 단어 `git`·`gh`
+  뒤의 공백류를 `-` 로 바꾼다(`git commit` → `git-commit`). 비어 있지 않은 값은 비어 있지 않게 남는다. 키와 그 밖의 값(status·waived·
+  originalStatus)은 자르지 않는다. 값에 개행이 없으므로 JSON 본문 줄이 구분자 줄이 될 수 없다.
+- **왜 git·gh 뒤를 치환하는가**: 커밋 훅(`hooks/preflight-gate.sh`)은 Bash 명령 문자열 **전체**에서 `git … commit`·`gh pr create` 를
+  찾는다. heredoc 본문의 자유 텍스트에 공백으로 둘러싼 `git commit`·`gh pr create` 가 있으면 기록 명령이 커밋·PR 호출로 읽혀 판정
+  대상이 된다 — base64 때는 없던 경로다(리뷰 지적). 훅은 고치지 않고 페이로드 쪽에서 막는다(CONTRACT `record-payload-not-a-git-call`.
+  meta-test WR-h 가 그런 reason 이 든 lanes 로 만든 명령을 실제 훅에 넣어 판정·관측 로그가 0 인지 본다). 처음에는 waived 가 아닌 lane 의
+  reason 을 비웠으나 철회했다 — 머지 보고(`receipt.sh report pr` 의 QA 줄 `건너뜀 (<사유>)`)와 관측 로그 `laneDetail` 이 그 사유를 쓴다.
+- **쓰는 곳**: 기록 **검사**(lane-status 판정·CONFLICT·waiver 검사·concealed-promotion·suite-not-run·no-lane-evidence·QA 기록 조건·
+  vault 대기 목록 조건·verify)가 reason 에서 읽는 것은 waived lane 의 비어 있음 여부뿐이다 — 축약·치환은 이것을 바꾸지 않는다.
+  관측 로그 `laneDetail`(원래 160자로 잘라 왔다)·머지 보고(QA 줄)·verify 의 waived 안내 줄은 영수증의 reason 을 그대로 쓰므로
+  축약·치환본이 나온다.
+  **잃는 것**: 160자 뒤의 사유와 `git`·`gh` 뒤 공백(→ `-`)뿐이다.
+- **한계**: 워크플로 안 기록의 영수증 `reason` 은 축약·치환본이다 — 원문은 워크플로 결과(`lanes`·`receiptLanes`)와 lane 전사에 남는다.
+  메인 폴백(`@lanes.json`)은 원문을 그대로 기록한다. 복사 오류 감소는 아직 재지 않았다 — 배포 뒤 `lanes-digest-mismatch` 비율을 다시
+  센다. 정규형은 lanes 에 없는 부동소수(JS `1e21` 과 Python `1e+21`)는 다룬다고 주장하지 않는다.
+- **어디**: `preflight.js`(BEGIN auto-record — `_recordLanes`·`_defuseGitWords`·`_canonJson`·`_recordLanesText`, 프롬프트), `receipt.sh`(CONTRACT
+  `workflow-record-inputs` 의 `--lanes-stdin`), `SKILL.md`(§ 4·관측 로그 사유), `meta-test/engine.sh`(WR-h, 기록 에이전트 스텁이 ```bash
+  블록을 실행). `ENGINE_VERSION` 2.6 → **2.7**(호환되는 추가 — 새 옵션, `--lanes-b64` 와 위치 인자 형태는 그대로).

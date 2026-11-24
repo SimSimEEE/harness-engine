@@ -369,7 +369,8 @@ FAIL 이든 참고만 남은 PASS 든 같다. 그래야 결과의 `recurrence` �
 **워크플로 결과의 `recorded.status` 가 `RECORDED` 면 기록은 끝났다** — PASS 면 워크플로의 기록 에이전트가 아래와 같은
 검사로 `receipt.sh record` 를 이미 돌렸다(로그·영수증 `via: workflow`). record 를 다시 부르지 말고 커밋 전 보고(§ 3)를 거쳐
 커밋으로 간다(별도 Bash 호출). `REFUSED`·`ERROR`·`SKIPPED` 면 아래 절차대로 메인이 기록한다 — `recorded.output` 에 거부 사유가 있다.
-근거는 DECISIONS.md 「워크플로 안에서 기록」.
+기록 에이전트는 lane 결과를 JSON 원문 heredoc(`--lanes-stdin`)과 정규형 sha256 으로 넘긴다. 그 영수증·관측 로그·머지 보고의 `reason` 은
+모든 lane 에서 앞 160자 축약에 `git`·`gh` 뒤 공백을 `-` 로 바꾼 본이다(원문은 워크플로 결과·전사에 남는다). 근거는 DECISIONS.md 「워크플로 안에서 기록」·「기록 입력을 JSON 원문으로」.
 
 ```bash
 $P/receipt.sh record commit|pr <repo> @<lanes.json> "" <워크플로 전사 디렉터리>
@@ -601,7 +602,8 @@ PR 시점에는 마일스톤 완료가 아직 참이 아니다. 그때 노트 �
    분류의 `secretScan.mode` 와 다르거나, always 인데 `secret-scanner` 결과가 없거나 SKIPPED·NOT_APPLICABLE 이다,
    `fast-path-not-empty` — 단축 경로(`via: fast-path`) 기록인데 분류의 필수 lane 이 있거나 실행 결과를 보고했다,
    `via-unknown` — 모르는 기록 경로 표시(`workflow` 를 표식 없이 붙인 경우 포함),
-   `lanes-digest-mismatch` — `--lanes-b64` 의 디코드 바이트가 `--lanes-sha256` 과 다르다(워크플로 안 기록),
+   `lanes-digest-mismatch` — `--lanes-stdin` JSON 의 정규형(또는 `--lanes-b64` 의 디코드 바이트)이 `--lanes-sha256` 과 다르거나,
+   stdin 이 JSON 객체가 아니거나, lanes 입력을 둘 이상으로 줬다(워크플로 안 기록),
    `transcripts-marker-unresolved` — 표식이 든 최근 워크플로 전사 디렉터리가 하나가 아니다(워크플로 안 기록),
    전사를 넘겼을 때만: `no-lane-evidence`·`sequence-violated`·`concealed-promotion`·`transcripts-unreadable`)
 - `event: verify` / `outcome: allowed|denied` — 훅이 실제로 무엇을 통과·차단했는가
