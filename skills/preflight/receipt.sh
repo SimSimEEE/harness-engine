@@ -9,6 +9,9 @@
 #
 # usage:
 #   receipt.sh record commit|pr <dir> [lanes-json|@file] [classify-json|@file] [transcripts-dir]
+#   receipt.sh record commit|pr <dir> --lanes-b64=<b64> --lanes-sha256=<hex> --transcripts-marker=<표식>
+#     워크플로 안 기록(preflight.js 기록 에이전트). lanes 는 디코드 바이트의 sha256 이 맞을 때만, 전사 디렉터리는
+#     표식이 든 최근 wf 디렉터리가 정확히 하나일 때만 받는다. 그 뒤 검사는 위 형태와 같다. 로그·영수증 via=workflow.
 #     게이트 결과 기록 (스테이징 후). transcripts-dir 을 넘기면 전사 기반 검사 셋이 켜진다
 #     (no-lane-evidence · concealed-promotion · sequence-violated). 넘겼는데 못 읽으면 거부한다.
 #     classify 를 생략하면 <gitdir>/claude-preflight.classify.json 을 자동으로 읽는다.
@@ -33,7 +36,26 @@ set -uo pipefail
 # shellcheck source=lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
+# 워크플로 안 기록(preflight.js 의 기록 에이전트, DECISIONS.md 2026-11-24 「워크플로 안에서 기록」)의 입력은 이름 붙은
+#  옵션이다 — 위치 인자 자리와 섞이지 않게 먼저 떼어 낸다. 옵션이 있는데 위치 인자로도 같은 것을 주면 record 가 거부한다.
+#   --lanes-b64=<base64> --lanes-sha256=<hex>  lanes-json 의 UTF-8 바이트와 그 sha256. 다르면 `lanes-digest-mismatch`
+#   --transcripts-marker=pf-record:<꼬리>:<16hex>  최근 워크플로 전사에서 이 표식이 있는 wf 디렉터리 **하나**를 찾아
+#     전사 디렉터리로 쓴다. 0개·2개 이상이면 `transcripts-marker-unresolved`. 이 기록은 관측 로그·영수증에 `via: workflow` 로 남는다
+lanes_b64=""; lanes_sha=""; tmarker=""; _opt_b64=0; _opt_sha=0; _opt_marker=0
+_pos=()
+for _a in "$@"; do
+    case "$_a" in
+        --lanes-b64=*) lanes_b64="${_a#*=}"; _opt_b64=1 ;;
+        --lanes-sha256=*) lanes_sha="${_a#*=}"; _opt_sha=1 ;;
+        --transcripts-marker=*) tmarker="${_a#*=}"; _opt_marker=1 ;;
+        *) _pos+=("$_a") ;;
+    esac
+done
+set -- ${_pos[@]+"${_pos[@]}"}
 cmd="${1:-}"; kind="${2:-}"; dir="${3:-$PWD}"; lanes="${4:-}"; classify="${5:-}"; transcripts="${6:-}"
+if [ "$cmd" != record ] && [ $((_opt_b64 + _opt_sha + _opt_marker)) -gt 0 ]; then
+    echo "--lanes-b64·--lanes-sha256·--transcripts-marker 는 record 만 받는다" >&2; exit 2
+fi
 
 gitdir=$(git -C "$dir" rev-parse --absolute-git-dir 2>/dev/null) || { echo "not a git repo"; exit 1; }
 receipt="$gitdir/claude-preflight.json"
@@ -74,7 +96,8 @@ record)
     engver=$(pf_engine_version)
     KIND="$kind" OKMODES="$(pf_ok_modes "$kind")" IT="$it" HEAD_SHA="$head" BRANCH="$branch" TS="$ts" R="$receipt" \
     LANES="$lanes" CLASSIFY="$classify" PLANJSON="$planjson" PLANQA="$planqa" PLANCLAIMS="$planclaims" COMMON_DIR="$common_dir" DIR="$dir" REPO_TOP="$repo_top" TRANSCRIPTS="$transcripts" ENGINE_VER="$engver" \
-    VIA="${PF_RECORD_VIA:-}" SECRET_SCAN_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/secret-scan.sh" \
+    VIA="${PF_RECORD_VIA:-}" OPT_B64="$_opt_b64" OPT_SHA="$_opt_sha" OPT_MARKER="$_opt_marker" LANES_B64="$lanes_b64" LANES_SHA="$lanes_sha" \
+    TMARKER="$tmarker" POS_LANES="${4:-}" POS_TRANSCRIPTS="$transcripts" SECRET_SCAN_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/secret-scan.sh" \
     PF_CATS="$(pf_category_roots)" python3 - <<'PY'
 import json, os, re, subprocess, sys
 
@@ -119,10 +142,72 @@ classify = _parse('CLASSIFY')
 # 남긴 기록이다. 표시는 영수증·관측 로그에 `via` 로 남는다. 표시만으로 검사가 줄지 않는다 — 아래 절차 검사를 그대로
 # 지나고, 분류의 필수 lane 이 비어 있지 않거나 SKIPPED·NOT_APPLICABLE 밖의 결과를 보고하면 거부한다(fast-path-not-empty).
 VIA = os.environ.get('VIA') or ''
-if VIA not in ('', 'fast-path'):
-    print(f"게이트 기록 거부 — 모르는 기록 경로 표시: {VIA!r} (받는 값: fast-path)")
+# `workflow` 는 표식(--transcripts-marker)으로 전사를 찾은 기록만의 표시다 — 환경변수로 붙일 수 없고, 표식을 주면 붙는다.
+_OPT_MARKER = os.environ.get('OPT_MARKER') == '1'
+if VIA not in ('', 'fast-path', 'workflow') or (VIA == 'workflow' and not _OPT_MARKER) or (VIA == 'fast-path' and _OPT_MARKER):
+    print(f"게이트 기록 거부 — 모르는 기록 경로 표시: {VIA!r} (받는 값: fast-path · workflow 는 --transcripts-marker 와 함께만)")
     _log('record', 'refused', reason='via-unknown')
     sys.exit(2)
+if _OPT_MARKER:
+    VIA = os.environ['VIA'] = 'workflow'
+
+# CONTRACT: workflow-record-inputs
+# 워크플로 안 기록(preflight.js 기록 에이전트)의 두 입력. lane 결과는 모델이 옮겨 적은 base64 라 sha256 으로 대조하고,
+# 전사 디렉터리는 기록 에이전트 프롬프트에만 실린 표식으로 찾는다. 둘 다 통과하면 위치 인자 형태와 같은 검사로 간다.
+if os.environ.get('OPT_B64') == '1' or os.environ.get('OPT_SHA') == '1':
+    import base64, hashlib
+    if os.environ.get('POS_LANES'):
+        print("게이트 기록 거부 — lanes 를 위치 인자와 --lanes-b64 로 함께 줬다 (하나만 준다)")
+        _log('record', 'refused', reason='lanes-digest-mismatch', detail='both-inputs')
+        sys.exit(2)
+    _want = (os.environ.get('LANES_SHA') or '').strip().lower()
+    try:
+        _raw = base64.b64decode(os.environ.get('LANES_B64') or '', validate=True)
+    except Exception:
+        _raw = None
+    _got = hashlib.sha256(_raw).hexdigest() if _raw is not None else None
+    if os.environ.get('OPT_B64') != '1' or not re.fullmatch(r'[0-9a-f]{64}', _want) or _raw is None or _got != _want:
+        print("게이트 기록 거부 — --lanes-b64 의 디코드 바이트가 --lanes-sha256 과 맞지 않는다")
+        print(f"    기대 {_want[:12] or '(없음)'} · 받은 {(_got or '(디코드 실패)')[:12]}")
+        print("  워크플로가 낸 lane 결과가 옮겨지다 바뀌었다. 워크플로 결과의 receiptLanes 를 파일로 써서 @파일 로 기록해라.")
+        _log('record', 'refused', reason='lanes-digest-mismatch', declared=_want[:12], got=(_got or '')[:12])
+        sys.exit(1)
+    try:
+        os.environ['LANES'] = _raw.decode('utf-8')
+    except UnicodeDecodeError:
+        print("게이트 기록 거부 — --lanes-b64 의 디코드 바이트가 UTF-8 이 아니다")
+        _log('record', 'refused', reason='lanes-digest-mismatch', detail='not-utf8')
+        sys.exit(1)
+    lanes = _parse('LANES')
+if _OPT_MARKER:
+    import glob as _gm, time as _tm
+    _mk = os.environ.get('TMARKER') or ''
+    _found = []
+    if os.environ.get('POS_TRANSCRIPTS'):
+        print("게이트 기록 거부 — 전사 디렉터리를 위치 인자와 --transcripts-marker 로 함께 줬다 (하나만 준다)")
+        _log('record', 'refused', reason='transcripts-marker-unresolved', detail='both-inputs')
+        sys.exit(2)
+    # 표식 꼴을 먼저 본다 — 짧거나 흔한 문자열이면 남의 전사까지 걸린다.
+    if re.fullmatch(r'pf-record:[A-Za-z0-9_-]{1,64}:[0-9a-f]{16}', _mk):
+        # 루트는 세션 전사가 쌓이는 자리 — CLAUDE_CONFIG_DIR 가 있으면 그 아래, 없으면 ~/.claude. 최근 6시간 안에
+        # 바뀐 agent 전사만 본다(기록 시점의 워크플로는 방금 돌았다 — 오래된 전사를 다 읽지 않는다).
+        _root = os.path.join(os.environ.get('CLAUDE_CONFIG_DIR') or os.path.expanduser('~/.claude'), 'projects')
+        _cut = _tm.time() - 6 * 3600
+        _hits = set()
+        for _f in _gm.glob(os.path.join(_gm.escape(_root), '*', '*', 'subagents', 'workflows', 'wf_*', 'agent-*.jsonl')):
+            try:
+                if os.path.getmtime(_f) < _cut: continue
+                with open(_f, 'rb') as _fh:
+                    if _mk.encode() in _fh.read(): _hits.add(os.path.dirname(_f))
+            except OSError:
+                continue
+        _found = sorted(_hits)
+    if len(_found) != 1:
+        print(f"게이트 기록 거부 — 전사 표식으로 워크플로 전사 디렉터리를 하나로 정하지 못했다 ({len(_found)}개): {_mk}")
+        print("  워크플로 결과의 Transcript dir 을 마지막 인자로 넘겨 메인에서 기록해라.")
+        _log('record', 'refused', reason='transcripts-marker-unresolved', marker=_mk, matches=len(_found))
+        sys.exit(1)
+    os.environ['TRANSCRIPTS'] = _found[0]
 
 OK = {'PASS', 'SKIPPED', 'NOT_APPLICABLE'}
 bad = []
@@ -989,7 +1074,8 @@ data['branches'].setdefault(os.environ['BRANCH'], {})[os.environ['KIND']] = {
     'ts': int(os.environ['TS']),
     # 이 기록을 만든 엔진 (lib.sh pf_engine_version). 못 읽으면 null — 판정에 쓰지 않는다.
     'engineVersion': os.environ.get('ENGINE_VER') or None,
-    # 기록 경로 — 단축 경로(lib.sh pf_fast_record)면 'fast-path', 정식 절차면 키가 없다.
+    # 기록 경로 — 단축 경로(lib.sh pf_fast_record)면 'fast-path', 워크플로 안 기록(--transcripts-marker)이면 'workflow',
+    #  메인이 부른 정식 절차면 키가 없다.
     **({'via': VIA} if VIA else {}),
     'lanes': lanes,
     'classification': classify,   # 어떤 근거로 이 lane 들을 골랐는가
@@ -1154,7 +1240,8 @@ print(f"recorded: {os.environ['KIND']} gate — indexTree {os.environ['IT'][:8]}
       + (f" · plan {_p.get('planId') or _p['status']}" if _p['status'] != 'NONE' else " · plan 없음")
       + (f" · lanes {len(lanes)}개" if lanes else " · lanes 미기록(권장하지 않음)")
       + (" · via fast-path (선택된 lane 없음)" if VIA == 'fast-path' else
-         f" · 미실행 {', '.join(skipped)}" if skipped else ""))
+         f" · 미실행 {', '.join(skipped)}" if skipped else "")
+      + (" · via workflow" if VIA == 'workflow' else ""))
 if vq:
     _REASON = {'lock-timeout': None, 'io-error': '대기 목록에 쓰지 못했다', 'no-transcripts': '전사를 넘기지 않아 드리프트를 읽지 못했다',
                'no-drifts-output': '전사의 vault-sync 출력에 drifts 가 없다'}

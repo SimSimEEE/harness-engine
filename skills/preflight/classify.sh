@@ -1305,6 +1305,9 @@ _payload_obj = {
     #  워크플로 스크립트는 Math.random()/Date.now() 를 쓸 수 없으므로(resume 이 깨진다) 난수는 여기서 만든다.
     #  args 에 실려 들어가므로 resume 은 같은 값을 다시 받는다. 판정·결속에는 쓰지 않는다.
     'runNonce': os.urandom(6).hex(),
+    # 이 분류를 낸 엔진 디렉터리(classify.sh 의 자리 — receipt.sh 가 같은 자리에 있다). preflight.js 가 PASS 일 때
+    #  워크플로 안에서 `receipt.sh record` 를 부르는 경로로 쓴다(DECISIONS.md 2026-11-24 「워크플로 안에서 기록」). 판정·결속에는 쓰지 않는다.
+    'engineDir': os.environ['SELFDIR'],
     # `--qa` 로 분류했는가. record 가 이 값으로 `--qa` 예외(커밋될 경로의 워킹트리 = 인덱스)를 건다(#8 R19).
     #  record 인자로는 끌 수 없다 — 지우면 스키마 검사가, qa lane 과 어긋나면 결속 검사가 거부한다.
     'qa': QA,
