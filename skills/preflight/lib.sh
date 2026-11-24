@@ -113,3 +113,47 @@ pf_category_roots() {
     if [ -n "$ov" ] && [ -d "$ov/categories" ]; then printf '%s:%s' "$sd/categories" "$ov/categories"
     else printf '%s' "$sd/categories"; fi
 }
+
+# 빈 게이트 단축 경로의 조건과 판정 — preflight-fast.sh 와 preflight-run.sh prepare 가 같이 쓴다(둘이 갈리면 한쪽만 기록한다).
+# 대상: commit 모드이고 플래그가 `--msg-file=<초안>` 뿐일 때. pr·all 은 대상이 아니고(PR 게이트는 pr-quality 가 늘 선택된다),
+# --qa·--review 는 lane 을 고르게 하는 플래그라 선택 0개가 될 수 없고, --body-file 은 PR 게이트의 입력이다.
+pf_fast_eligible() {
+    [ "${1:-}" = commit ] || return 1
+    shift
+    local f
+    for f in "$@"; do case "$f" in --msg-file=?*) ;; *) return 1 ;; esac; done
+    return 0
+}
+
+# 분류 파일 → 단축 경로 판정. stdout: JSON 한 줄 {"selected": [lane…], "summary": [줄…], "tail": <판정 줄>}.
+# 선택이 0개면 두 번째 인자 경로에 기록 입력(lane 전부 SKIPPED, 사유는 분류의 notSelected)을 쓴다.
+# selected 는 분류의 selected 에 sequential 체인의 lane 을 더한 것이다(워크플로가 돌릴 집합).
+pf_fast_plan() {
+    python3 - "$1" "$2" <<'PY'
+import json, sys
+c = json.load(open(sys.argv[1]))
+sel = list(c.get('selected') or {})
+for chain in (c.get('sequential') or []):
+    sel += [l for l in chain if l not in sel]
+ss = c.get('secretScan') or {}
+cc = c.get('claimCheck') or {}
+lines = [f"카테고리: {c.get('category')} · 시크릿 스캔: {ss.get('status')} ({ss.get('mode')}) · 변경 파일 {len((c.get('files') or {}).get('all') or [])}개"]
+if cc.get('status') == 'WARN':
+    n = (cc.get('counts') or {}).get('warn')
+    lines.append(f"사실 주장 검사: WARN {n}건 — 판정에는 영향 없다(참고). 출처 없는 수치는 커밋 전에 고쳐라")
+if sel:
+    tail = f"선택된 lane: {', '.join(sel)} — 기록하지 않았다. 정식 절차(/preflight 워크플로)를 돌려라"
+else:
+    ns = c.get('notSelected') or {}
+    json.dump({l: {'status': 'SKIPPED', 'reason': str(r)} for l, r in sorted(ns.items())},
+              open(sys.argv[2], 'w'), ensure_ascii=False)
+    tail = f"선택된 lane 없음 — 전부 SKIPPED({len(ns)}개, 사유는 분류의 notSelected)"
+print(json.dumps({'selected': sel, 'summary': lines, 'tail': tail}, ensure_ascii=True))
+PY
+}
+
+# 단축 경로 기록 — receipt.sh 가 같은 절차 검사를 하고, via fast-path 는 필수 lane 이 빈 분류만 받는다.
+# usage: pf_fast_record <top> <분류 파일> <pf_fast_plan 이 쓴 기록 입력>
+pf_fast_record() {
+    PF_RECORD_VIA=fast-path "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/receipt.sh" record commit "$1" "@$3" "@$2"
+}
