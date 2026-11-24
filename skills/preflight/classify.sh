@@ -10,7 +10,10 @@
 #   또한 <gitdir>/claude-preflight.classify.json 에 같은 내용을 쓴다 (receipt 가 자동으로 읽는다).
 #   쓰기를 마치면 쓴 바이트(stdout 과 같다)의 sha256 을 stderr 에 `classify-sha256: <hex>` 한 줄로 낸다 —
 #   큰 분류를 데이터 스크립트로 넘길 때(SKILL.md pf_gate_args → preflight.js classification-load) 이 값으로 내용을 대조한다.
-# usage: classify.sh <dir> category      — 카테고리 조회(category.sh 가 부른다). 읽기 전용, commit 모드 입력.
+# usage: classify.sh <dir> category [--of=commit|pr]
+#   카테고리 조회(category.sh 가 부른다). 읽기 전용. 기본은 commit 모드 입력(인덱스 스냅숏).
+#   `--of=pr` 은 pr 모드 입력(HEAD 스냅숏)으로 판정한다 — receipt.sh record 가 PR 분류의 소속을 다시 판정할 때 쓴다
+#   (CONTRACT: category-recheck-at-record). 판정 코드는 분류와 같다 — 입력 스냅숏만 고른다.
 #
 # 카테고리: 대상 레포의 성격별 규칙은 categories/<이름>/rules.py 에 있고 이 파일은 카테고리 이름을 모른다.
 #   선언은 categories/categories.json 이다. 둘 이상에 걸리거나 적재에 실패하면 분류하지 않고 끝난다(exit 3).
@@ -20,9 +23,11 @@
 #   판단이 안 서면 **true 로 기울인다** — lane 을 덜 도는 쪽이 아니라 더 도는 쪽이 안전하다.
 set -uo pipefail
 
-dir="${1:-$PWD}"; mode="${2:-commit}"; qa=0; review=0; body_file=''; msg_file=''
+dir="${1:-$PWD}"; mode="${2:-commit}"; qa=0; review=0; body_file=''; msg_file=''; cat_of=''
 for _flag in "${@:3}"; do
     case "$_flag" in
+        # 조회 전용 — 어느 모드의 스냅숏으로 소속을 판정할지. 분류 모드에서는 받지 않는다(아래).
+        --of=commit|--of=pr) cat_of="${_flag#--of=}" ;;
         --qa) qa=1 ;;
         --review) review=1 ;;
         # PR 본문만 고친 라운드도 라운드다 — 본문 초안을 받아야 집계에 보인다 (round 이벤트 전용).
@@ -36,7 +41,15 @@ for _flag in "${@:3}"; do
     esac
 done
 case "$mode" in commit|pr|all|category) ;; *) echo "mode 는 commit|pr|all|category 이다: $mode" >&2; exit 2 ;; esac
-[ "$mode" = category ] && [ $# -gt 2 ] && { echo "category 조회는 플래그를 받지 않는다: ${*:3}" >&2; exit 2; }
+if [ "$mode" = category ]; then
+    # 조회는 --of 하나만 받는다(한 번). 분류 플래그(--qa 등)는 lane 선택의 입력이라 조회와 무관하다.
+    [ $# -le 3 ] && { [ $# -le 2 ] || [ -n "$cat_of" ]; } || { echo "category 조회는 --of=commit|pr 하나만 받는다: ${*:3}" >&2; exit 2; }
+elif [ -n "$cat_of" ]; then
+    echo "--of 는 category 조회만 받는다" >&2; exit 2
+fi
+# --of=pr 조회는 pr 모드 입력으로 판정한다 — 스냅숏·base 해석을 pr 분류와 같은 코드로 고르고 판정 직후 끝난다.
+cat_only=0
+if [ "$mode" = category ] && [ "$cat_of" = pr ]; then mode=pr; cat_only=1; fi
 
 gitdir=$(git -C "$dir" rev-parse --absolute-git-dir 2>/dev/null) || { echo "not a git repo: $dir" >&2; exit 1; }
 out="$gitdir/claude-preflight.classify.json"
@@ -44,7 +57,7 @@ out="$gitdir/claude-preflight.classify.json"
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
 SELFDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" GITDIR="$gitdir" ENGINE_VER="$(pf_engine_version)" OVERLAY="$(pf_overlay_dir)" \
-PF_BRANCH="$(pf_branch "$dir")" DIR="$dir" MODE="$mode" QA="$qa" REVIEW="$review" OUT="$out" BODY_FILE="$body_file" MSG_FILE="$msg_file" python3 - <<'PY'
+PF_BRANCH="$(pf_branch "$dir")" DIR="$dir" MODE="$mode" CAT_ONLY="$cat_only" QA="$qa" REVIEW="$review" OUT="$out" BODY_FILE="$body_file" MSG_FILE="$msg_file" python3 - <<'PY'
 import json, os, posixpath, re, shlex, subprocess, sys, time
 from pathlib import Path
 
@@ -398,11 +411,14 @@ def _na(what):
     return f'category-not-applicable — {what} 은(는) 카테고리 {CAT_NAME or "없음"} 의 규칙이 아니다'
 
 # 조회: 카테고리·근거 신호·절차 요구만 내고 끝난다. 아무것도 쓰지 않고 vault 를 조회하지 않는다(I6).
-if MODE == 'category':
+# `--of=pr` 조회(CAT_ONLY)는 MODE 가 pr 이다 — 위 판정이 pr 분류와 같은 스냅숏(HEAD)을 봤다.
+if MODE == 'category' or os.environ.get('CAT_ONLY') == '1':
+    _basis_in = ('classify.sh pr 모드 입력 — 소속 판정은 HEAD 스냅숏' if MODE == 'pr'
+                 else 'classify.sh commit 모드 입력 — 소속 판정은 인덱스 스냅숏')
     print(_json_out({'repo': str(R), 'category': CAT_NAME,
                      'evidence': {CAT_NAME: CAT_EVIDENCE} if CAT_NAME else {},
                      'procedures': _CAT_PROCS, 'profile': PROFILE_OUT, 'origin': ORIGIN_SLUG or None,
-                     'basis': 'classify.sh commit 모드 입력 — 소속 판정은 인덱스 스냅숏, 워킹트리 표식은 워킹트리. '
+                     'basis': f'{_basis_in}, 워킹트리 표식은 워킹트리. '
                               f'카테고리: {CATEGORY_BASIS}'},
                     indent=2))
     sys.exit(0)

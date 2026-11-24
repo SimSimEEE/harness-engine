@@ -159,3 +159,5 @@ REPO 는 스크립트 디렉터리 기준이라 그 설치 형태에서 체크�
 
 닫힘: record 가 재스캔의 `categoryMode`(선언 카테고리의 `rules.py`, `all` 분류는 always)로 모드를 다시 구해 `secret-scan-mode-mismatch` 로 거부한다 — `skills/preflight/DECISIONS.md` 2026-11-23 「기록 단계가 시크릿 검사 모드를 다시 구한다」, 회귀 `meta-test/engine.sh` SS-o. 남은 한계: 카테고리 이름 위조는 범위 밖(같은 절).
 "먼저 셀 것" 의 관측 로그 집계는 이 레포에 로그가 없어 하지 않았다.
+남은 한계(카테고리 이름 위조)도 닫힘(2026-11-24): record 가 같은 대상으로 카테고리 소속을 다시 판정해 `category-mismatch` 로 거부한다 —
+`skills/preflight/DECISIONS.md` 2026-11-24 「기록 단계가 카테고리 소속을 다시 판정한다」, 회귀 `meta-test/engine.sh` CR-a~e.
