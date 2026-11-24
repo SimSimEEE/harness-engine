@@ -4228,6 +4228,208 @@ git -C "$IX" add -A
 [ "$(ixj "$(ixcl "$IX" commit)" 'len((d["laneMeta"].get("test-runner") or {}).get("suites") or [])')" != "0" ] \
   && ok "스위트·훅이 인덱스에 있으면 suites 가 채워진다" || ng "스테이징된 스위트를 못 본다" "1 이상"
 
+echo "== Python 테스트: 회귀 명령은 분류기가 확정한다 (카테고리 무관) =="
+# DECISIONS.md 2026-11-24 「Python 테스트를 분류기가 확정한다」. .py 로직 변경 + 스냅숏의 test_*.py·*_test.py →
+# test-runner 선택과 명령 확정. 명령은 스냅숏 루트의 pytest 설정 유무로 갈린다. 카테고리 suites 에 더해진다.
+_pyc(){ ixj "$1" '" | ".join(s["cmd"] for s in (d["laneMeta"].get("test-runner") or {}).get("suites") or [] if s["name"].startswith("python-tests"))'; }
+pyrepo(){ ixrepo "$1"; mkdir -p "$1/$2"
+  printf 'def f():\n    return 1\n' > "$1/$2/m.py"
+  printf 'import unittest\nclass T(unittest.TestCase):\n    def test_a(self):\n        self.assertTrue(True)\n' > "$1/$2/$3"
+  git -C "$1" add -A; git -C "$1" "$G" -qm init
+  printf 'def f():\n    return 2\n' > "$1/$2/m.py"; git -C "$1" add -A; }
+# 확정된 Python 명령을 레포에서 하나씩 실제로 돌려 "종료코드:실행 수" 를 낸다. 0개 실행(3.12 전은 exit 0)도 드러난다.
+_pyrun(){ printf '%s' "$2" | python3 -c '
+import json, re, subprocess, sys
+d = json.load(sys.stdin); out = []
+for s in (d["laneMeta"].get("test-runner") or {}).get("suites") or []:
+    if not s["name"].startswith("python-tests"): continue
+    r = subprocess.run(["bash", "-c", s["marker"]], cwd=sys.argv[1], capture_output=True, text=True)
+    m = re.search(r"^Ran (\d+) tests?", r.stderr, re.M)
+    out.append(f"{r.returncode}:{m.group(1) if m else 0}")
+print(" ".join(out))' "$1" 2>"$T/py.err"; }
+# (a) 폴더형 unittest — tools/test_*.py, 패키지 아님
+PY="$T/py-a"; pyrepo "$PY" tools test_m.py; O=$(ixcl "$PY" commit)
+[ "$(ixj "$O" 'd["selected"].get("test-runner")')" = "['tools/m.py']" ] \
+  && ok "py(a): .py 로직 변경 + tools/test_*.py → test-runner 를 고른다" || ng "py(a): Python 테스트가 있는데 test-runner 가 안 붙는다 ($(ixj "$O" 'd["notSelected"].get("test-runner")'))" "['tools/m.py']"
+[ "$(_pyc "$O")" = "cd <스냅숏> && python3 -B -m unittest discover -s tools -p 'test_*.py'" ] \
+  && ok "py(a): 패키지가 아닌 폴더는 -t 없이 discover -s <dir> -p 'test_*.py'" || ng "py(a): unittest 명령이 다르다 ($(_pyc "$O"))" "discover -s tools -p 'test_*.py'"
+[ "$(ixj "$O" 'd["laneMeta"]["test-runner"]["pythonTests"]["reason"].split(" ")[0] + " " + d["laneMeta"]["test-runner"]["pythonTests"]["runner"]')" = "python-tests unittest" ] \
+  && ok "py(a): laneMeta 에 python-tests 사유와 러너가 남는다" || ng "py(a): 선택 사유가 분류에 없다" "python-tests unittest"
+[ "$(_pyrun "$PY" "$O")" = "0:1" ] \
+  && ok "py(a): 확정된 명령이 그 레포에서 실제로 테스트 1개를 찾아 통과한다" || ng "py(a): 확정된 명령이 돌지 않거나 0개 실행 ($(_pyrun "$PY" "$O"))" "0:1"
+# (b) tests/ 패키지형 — __init__.py 가 있으면 -t . 로 루트를 import 최상위로 둔다
+PY="$T/py-b"; pyrepo "$PY" tests test_m.py; printf '' > "$PY/tests/__init__.py"; git -C "$PY" add -A; O=$(ixcl "$PY" commit)
+[ "$(_pyc "$O")" = "cd <스냅숏> && python3 -B -m unittest discover -s tests -t . -p 'test_*.py'" ] \
+  && ok "py(b): tests/__init__.py 가 있으면 -t . 를 붙인다" || ng "py(b): 패키지형 명령이 다르다 ($(_pyc "$O"))" "discover -s tests -t . -p 'test_*.py'"
+[ "$(_pyrun "$PY" "$O")" = "0:1" ] && ok "py(b): 패키지형 명령이 실제로 테스트 1개를 돌려 통과한다" || ng "py(b): 패키지형 명령 실행 ($(_pyrun "$PY" "$O"))" "0:1"
+# *_test.py 만 있으면 패턴이 그것이다
+PY="$T/py-b2"; pyrepo "$PY" lib m_test.py; O=$(ixcl "$PY" commit)
+[ "$(_pyc "$O")" = "cd <스냅숏> && python3 -B -m unittest discover -s lib -p '*_test.py'" ] \
+  && ok "py(b): *_test.py 만 있으면 -p '*_test.py'" || ng "py(b): *_test.py 패턴을 못 고른다 ($(_pyc "$O"))" "-p '*_test.py'"
+# (h) 비패키지 중첩 — 묶는 단위는 테스트 파일이 있는 디렉터리다. 최상위(-s skills)로 묶으면 0개 실행이다.
+PY="$T/py-h"; pyrepo "$PY" skills/preflight test_m.py; O=$(ixcl "$PY" commit)
+[ "$(_pyc "$O")" = "cd <스냅숏> && python3 -B -m unittest discover -s skills/preflight -p 'test_*.py'" ] && [ "$(_pyrun "$PY" "$O")" = "0:1" ] \
+  && ok "py(h): 비패키지 중첩 디렉터리는 -s <그 디렉터리> 로 돌고 테스트 1개를 실행한다" || ng "py(h): 중첩 테스트를 못 돈다 ($(_pyc "$O") → $(_pyrun "$PY" "$O"))" "-s skills/preflight, 0:1"
+# (i) 패키지 사슬 — -t 는 __init__.py 가 이어지는 가장 위 패키지(src/pkg)의 부모(src)다. 테스트가 pkg.sub 를 import 한다.
+PY="$T/py-i"; pyrepo "$PY" src/pkg/sub/tests test_x.py; mv "$PY/src/pkg/sub/tests/m.py" "$PY/src/pkg/sub/m.py"
+printf '' > "$PY/src/pkg/__init__.py"; printf '' > "$PY/src/pkg/sub/__init__.py"; printf '' > "$PY/src/pkg/sub/tests/__init__.py"
+printf 'import unittest\nfrom pkg.sub import m\nclass T(unittest.TestCase):\n    def test_a(self):\n        self.assertEqual(m.f(), 2)\n' > "$PY/src/pkg/sub/tests/test_x.py"
+git -C "$PY" add -A; O=$(ixcl "$PY" commit)
+[ "$(_pyc "$O")" = "cd <스냅숏> && python3 -B -m unittest discover -s src/pkg/sub/tests -t src -p 'test_*.py'" ] \
+  && ok "py(i): 패키지 사슬이면 -t 는 가장 위 패키지의 부모다 (-t src)" || ng "py(i): -t 계산이 틀렸다 ($(_pyc "$O"))" "-s src/pkg/sub/tests -t src"
+[ "$(_pyrun "$PY" "$O")" = "0:1" ] && ok "py(i): 그 명령이 패키지 import 로 테스트 1개를 돌려 통과한다" || ng "py(i): 패키지 사슬 명령 실행 ($(_pyrun "$PY" "$O"))" "0:1"
+# (j) 루트 + 패키지 tests/ — 루트 discover 가 tests/ 를 이미 수집하므로 명령 하나, 테스트는 한 번씩
+PY="$T/py-j"; pyrepo "$PY" tests test_t.py; printf '' > "$PY/tests/__init__.py"
+printf 'import unittest\nclass R(unittest.TestCase):\n    def test_r(self):\n        self.assertTrue(True)\n' > "$PY/test_r.py"; git -C "$PY" add -A; O=$(ixcl "$PY" commit)
+[ "$(_pyc "$O")" = "cd <스냅숏> && python3 -B -m unittest discover -s . -p 'test_*.py'" ] && [ "$(_pyrun "$PY" "$O")" = "0:2" ] \
+  && ok "py(j): 루트와 패키지 tests/ 가 함께면 명령 하나로 두 테스트를 한 번씩 돈다" || ng "py(j): 중복 실행 또는 누락 ($(_pyc "$O") → $(_pyrun "$PY" "$O"))" "-s . 하나, 0:2"
+# 비패키지 하위는 루트 discover 가 수집하지 않으므로 따로 돈다 (중복 제거가 과하지 않다)
+PY="$T/py-j2"; pyrepo "$PY" tools test_t.py
+printf 'import unittest\nclass R(unittest.TestCase):\n    def test_r(self):\n        self.assertTrue(True)\n' > "$PY/test_r.py"; git -C "$PY" add -A; O=$(ixcl "$PY" commit)
+[ "$(_pyrun "$PY" "$O")" = "0:1 0:1" ] \
+  && ok "py(j): 루트 밑 비패키지 디렉터리는 따로 돈다 (각 1개)" || ng "py(j): 비패키지 하위를 중복으로 보고 뺐다 ($(_pyc "$O") → $(_pyrun "$PY" "$O"))" "0:1 0:1"
+# (c) pytest 설정 — pytest.ini · pyproject [tool.pytest…] · setup.cfg [tool:pytest] 셋 다 같은 명령
+_pyc3=""
+for _cf in 'pytest.ini:[pytest]' 'pyproject.toml:[tool.pytest.ini_options]' 'setup.cfg:[tool:pytest]'; do
+  PY="$T/py-c"; pyrepo "$PY" tools test_m.py; printf '%s\n' "${_cf#*:}" > "$PY/${_cf%%:*}"; git -C "$PY" add -A
+  _pyc3="$_pyc3$(_pyc "$(ixcl "$PY" commit)");"
+done
+_pyw="cd <스냅숏> && python3 -B -m pytest -q -p no:cacheprovider tools"
+[ "$_pyc3" = "$_pyw;$_pyw;$_pyw;" ] \
+  && ok "py(c): pytest 설정(pytest.ini·pyproject·setup.cfg)이 있으면 python3 -B -m pytest -q -p no:cacheprovider <dirs>" || ng "py(c): pytest 명령이 다르다 ($_pyc3)" "$_pyw ×3"
+# 설정 파일이 있어도 pytest 절이 없으면 unittest 다
+PY="$T/py-c2"; pyrepo "$PY" tools test_m.py; printf '[tool.black]\n' > "$PY/pyproject.toml"; git -C "$PY" add -A
+case "$(_pyc "$(ixcl "$PY" commit)")" in *"unittest discover"*) ok "py(c): pytest 절 없는 pyproject.toml 은 pytest 설정이 아니다";;
+  *) ng "py(c): pytest 절 없는 설정으로 pytest 를 고른다" "unittest";; esac
+# pytest 인자는 조상이 이미 인자인 디렉터리를 빼고 낸다 (pytest 는 비패키지 하위도 수집)
+PY="$T/py-c3"; pyrepo "$PY" tools/sub test_s.py; mkdir -p "$PY/lib"; cp "$PY/tools/sub/test_s.py" "$PY/tools/test_t.py"; cp "$PY/tools/sub/test_s.py" "$PY/lib/test_l.py"
+printf '[pytest]\n' > "$PY/pytest.ini"; git -C "$PY" add -A
+[ "$(_pyc "$(ixcl "$PY" commit)")" = "cd <스냅숏> && python3 -B -m pytest -q -p no:cacheprovider lib tools" ] \
+  && ok "py(c): pytest 인자에서 조상이 있는 하위 디렉터리를 뺀다" || ng "py(c): pytest 인자가 겹친다 ($(_pyc "$(ixcl "$PY" commit)"))" "pytest -q lib tools"
+# 러너 선택(_py_runner): pytest 신호(설정·conftest.py·함수형 테스트)가 하나라도 있으면 pytest — unittest discover 는 함수형을 0개로 센다.
+_pyrw(){ ixj "$1" 'd["laneMeta"]["test-runner"]["pythonTests"]["runner"] + ":" + ",".join(d["laneMeta"]["test-runner"]["pythonTests"]["why"])'; }
+_pyfn='def test_x():\n    assert 1 + 1 == 2\n'
+# (l) conftest.py + 함수형
+PY="$T/py-l"; pyrepo "$PY" tests test_m.py; printf "$_pyfn" > "$PY/tests/test_m.py"; printf '' > "$PY/conftest.py"; git -C "$PY" add -A; O=$(ixcl "$PY" commit)
+[ "$(_pyc "$O")" = "cd <스냅숏> && python3 -B -m pytest -q -p no:cacheprovider tests" ] && [ "$(_pyrw "$O")" = "pytest:conftest,function-style" ] \
+  && ok "py(l): conftest.py + 함수형 테스트 → pytest (근거 conftest·function-style)" || ng "py(l): conftest 레포가 pytest 가 아니다 ($(_pyc "$O") / $(_pyrw "$O"))" "pytest -q tests, conftest,function-style"
+# (m) 설정·conftest 없이 함수형만
+PY="$T/py-m"; pyrepo "$PY" tests test_m.py; printf "$_pyfn" > "$PY/tests/test_m.py"; git -C "$PY" add -A; O=$(ixcl "$PY" commit)
+[ "$(_pyc "$O")" = "cd <스냅숏> && python3 -B -m pytest -q -p no:cacheprovider tests" ] && [ "$(_pyrw "$O")" = "pytest:function-style" ] \
+  && ok "py(m): 함수형 테스트만 있으면 설정이 없어도 pytest (근거 function-style)" || ng "py(m): 함수형 테스트를 unittest 로 돌린다 ($(_pyc "$O") / $(_pyrw "$O"))" "pytest -q tests, function-style"
+# conftest.py 만 있어도(테스트는 TestCase) pytest 다
+PY="$T/py-m2"; pyrepo "$PY" tests test_m.py; printf '' > "$PY/tests/conftest.py"; git -C "$PY" add -A
+[ "$(_pyrw "$(ixcl "$PY" commit)")" = "pytest:conftest" ] && ok "py(m): conftest.py 가 있으면 TestCase 형이어도 pytest (근거 conftest)" || ng "py(m): conftest 신호를 놓친다 ($(_pyrw "$(ixcl "$PY" commit)"))" "pytest:conftest"
+# (n) 전부 TestCase 형이고 신호가 없으면 unittest 그대로
+PY="$T/py-n"; pyrepo "$PY" tools test_m.py; O=$(ixcl "$PY" commit)
+[ "$(_pyrw "$O")" = "unittest:" ] && [ "$(_pyrun "$PY" "$O")" = "0:1" ] \
+  && ok "py(n): 전부 TestCase 형이고 pytest 신호가 없으면 unittest (근거 없음)" || ng "py(n): TestCase 레포의 러너가 바뀌었다 ($(_pyrw "$O"))" "unittest:"
+# (o) TestCase 와 함수형이 섞이면 pytest — unittest 로 돌리면 함수형이 빠진다
+PY="$T/py-o"; pyrepo "$PY" tools test_m.py; printf "$_pyfn" > "$PY/tools/test_f.py"; git -C "$PY" add -A; O=$(ixcl "$PY" commit)
+[ "$(_pyc "$O")" = "cd <스냅숏> && python3 -B -m pytest -q -p no:cacheprovider tools" ] && [ "$(ixj "$O" 'd["laneMeta"]["test-runner"]["pythonTests"]["functionStyle"]')" = "['tools/test_f.py']" ] \
+  && ok "py(o): TestCase 와 함수형이 섞이면 pytest, 함수형 파일이 근거로 남는다" || ng "py(o): 섞인 레포에서 함수형을 놓친다 ($(_pyc "$O"))" "pytest -q tools, functionStyle [tools/test_f.py]"
+# 파일 형 판정은 구문 트리(ast)다 — import 문·주석·문자열은 근거가 아니다. _pyst <내용> → "러너:근거"
+_pyst(){ PY="$T/py-st"; pyrepo "$PY" tools test_m.py; printf '%b' "$1" > "$PY/tools/test_m.py"; git -C "$PY" add -A; _pyrw "$(ixcl "$PY" commit)"; }
+# (p) unittest.mock 을 쓰는 pytest 함수형
+[ "$(_pyst 'from unittest.mock import patch\nimport unittest.mock\ndef test_x():\n    assert patch\n')" = "pytest:function-style" ] \
+  && ok "py(p): from unittest.mock import + def test_ → pytest (import 는 근거가 아니다)" || ng "py(p): mock import 로 unittest 를 고른다 ($(_pyst 'from unittest.mock import patch\ndef test_x():\n    assert patch\n'))" "pytest:function-style"
+# (q) import unittest 만 있고 def test_
+[ "$(_pyst 'import unittest\ndef test_x():\n    assert True\n')" = "pytest:function-style" ] \
+  && ok "py(q): import unittest 만 있고 모듈 def test_ → pytest" || ng "py(q): import unittest 를 unittest 형으로 센다" "pytest:function-style"
+# (r) 베이스 없는 Test 클래스(pytest 클래스형)
+[ "$(_pyst 'class TestFoo:\n    def test_a(self):\n        assert True\n')" = "pytest:function-style" ] \
+  && ok "py(r): class TestFoo: (베이스 없음) → pytest" || ng "py(r): pytest 클래스형을 놓친다" "pytest:function-style"
+# (s) IsolatedAsyncioTestCase 는 unittest 형 — 실제로 돌려 1개 실행
+_pys='import unittest\nclass TestA(unittest.IsolatedAsyncioTestCase):\n    async def test_a(self):\n        self.assertTrue(True)\n'
+[ "$(_pyst "$_pys")" = "unittest:" ] && [ "$(_pyrun "$T/py-st" "$(ixcl "$T/py-st" commit)")" = "0:1" ] \
+  && ok "py(s): class T(unittest.IsolatedAsyncioTestCase) → unittest, 1개 실행" || ng "py(s): …TestCase 베이스를 못 본다 ($(_pyst "$_pys"))" "unittest:, 0:1"
+# (t) 주석·문자열 안의 TestCase 는 영향이 없다 — TestCase 형 판정도 함수형 판정도 바꾸지 않는다
+_pyt1="# class X(unittest.TestCase)\nS = 'unittest.TestCase'\ndef test_x():\n    assert S\n"
+_pyt2="'''TestCase'''\n# def test_y(): pass\nimport unittest\nclass T(unittest.TestCase):\n    def test_a(self):\n        self.assertTrue(True)\n"
+[ "$(_pyst "$_pyt1")" = "pytest:function-style" ] && [ "$(_pyst "$_pyt2")" = "unittest:" ] \
+  && ok "py(t): 주석·문자열 안의 TestCase·def test_ 는 판정에 영향이 없다" || ng "py(t): 주석·문자열을 근거로 센다" "pytest:function-style · unittest:"
+# (u) 파싱 실패 → pytest 쪽, 근거 parse-error
+[ "$(_pyst 'def test_x(:\n    pass\n')" = "pytest:parse-error" ] \
+  && ok "py(u): 파싱 실패 파일 → pytest, 근거 parse-error" || ng "py(u): 파싱 실패를 unittest 로 둔다 ($(_pyst 'def test_x(:\n'))" "pytest:parse-error"
+# 베이스는 같은 모듈의 클래스 정의로 해소한다 — 흔한 unittest 패턴 Base(TestCase) → TestFoo(Base)
+# (v) 같은 모듈 Base(unittest.TestCase) + TestFoo(Base) → unittest, 실제로 1개 실행
+_pyv='import unittest\nclass Base(unittest.TestCase):\n    pass\nclass TestFoo(Base):\n    def test_a(self):\n        self.assertTrue(True)\n'
+[ "$(_pyst "$_pyv")" = "unittest:" ] && [ "$(_pyrun "$T/py-st" "$(ixcl "$T/py-st" commit)")" = "0:1" ] \
+  && ok "py(v): 같은 모듈의 Base(TestCase) 를 상속한 TestFoo 는 unittest 형, 1개 실행" || ng "py(v): 모듈 안 베이스를 해소하지 못한다 ($(_pyst "$_pyv"))" "unittest:, 0:1"
+# 순환 상속(해소 불가)은 근거가 아니고 분류가 죽지 않는다
+[ "$(_pyst 'class TestA(TestB):\n    pass\nclass TestB(TestA):\n    pass\ndef test_x():\n    assert True\n')" = "pytest:function-style" ] \
+  && ok "py(v): 같은 모듈의 순환 상속에서도 분류가 끝난다" || ng "py(v): 순환 상속에서 분류가 실패한다" "pytest:function-style"
+# (w) 다른 모듈에서 온 베이스만 — 그 클래스는 근거가 아니다(파일은 none). 다른 신호가 없으면 unittest 로 남고,
+#     베이스가 TestCase 면 discover 가 그것을 실제로 찾아 돈다(0개 실행이 아니다).
+PY="$T/py-w"; pyrepo "$PY" tools test_m.py
+printf 'import unittest\nclass Base(unittest.TestCase):\n    pass\n' > "$PY/tools/helpers.py"
+printf 'from helpers import Base\nclass TestFoo(Base):\n    def test_a(self):\n        self.assertTrue(True)\n' > "$PY/tools/test_m.py"
+git -C "$PY" add -A; O=$(ixcl "$PY" commit)
+[ "$(_pyrw "$O")" = "unittest:" ] && [ "$(ixj "$O" 'd["laneMeta"]["test-runner"]["pythonTests"]["functionStyle"]')" = "[]" ] && [ "$(_pyrun "$PY" "$O")" = "0:1" ] \
+  && ok "py(w): 해소 불가 베이스의 Test 클래스는 근거가 아니고, 신호가 없으면 unittest 로 1개 실행한다" || ng "py(w): 해소 불가 베이스 처리 ($(_pyrw "$O") → $(_pyrun "$PY" "$O"))" "unittest:, 0:1"
+# (x) 헬퍼 클래스 TestData(베이스 없음) + 모듈 def test_x → pytest 그대로
+[ "$(_pyst 'class TestData:\n    pass\ndef test_x():\n    assert TestData\n')" = "pytest:function-style" ] \
+  && ok "py(x): 베이스 없는 TestData + 모듈 def test_ → pytest" || ng "py(x): 헬퍼 클래스가 함수형 판정을 바꿨다" "pytest:function-style"
+# (d) 테스트 없는 Python 레포 — 지금처럼 SKIPPED(no-testable-file-change)
+PY="$T/py-d"; ixrepo "$PY"; printf 'def f():\n    return 1\n' > "$PY/m.py"; git -C "$PY" add -A; git -C "$PY" "$G" -qm init
+printf 'def f():\n    return 2\n' > "$PY/m.py"; git -C "$PY" add -A; O=$(ixcl "$PY" commit)
+[ "$(ixj "$O" '("test-runner" in d["selected"], d["notSelected"].get("test-runner","").split(" ")[0])')" = "(False, 'no-testable-file-change')" ] \
+  && ok "py(d): Python 테스트가 없으면 test-runner 는 지금 사유로 빠진다" || ng "py(d): 테스트 없는 Python 레포에서 선택이 달라졌다 ($(ixj "$O" 'd["notSelected"].get("test-runner")'))" "no-testable-file-change"
+# (e) 주석만 바뀐 .py — 테스트가 있어도 고르지 않는다
+PY="$T/py-e"; pyrepo "$PY" tools test_m.py; printf 'def f():\n    return 1\n# note\n' > "$PY/tools/m.py"; git -C "$PY" add -A; O=$(ixcl "$PY" commit)
+[ "$(ixj "$O" '("test-runner" in d["selected"], "pythonTests" in (d["laneMeta"].get("test-runner") or {}))')" = "(False, False)" ] \
+  && ok "py(e): 주석만 바뀐 .py 는 Python 테스트를 붙이지 않는다" || ng "py(e): 주석 변경으로 Python 테스트를 돌린다" "선택 안 함"
+# (f) 기록: 확정된 Python 명령을 test-runner 가 실행하지 않으면 suite-not-run
+PY="$T/py-a"; ixcl "$PY" commit > "$T/py-f.json"
+_pyrec(){ python3 - "$T/py-f.json" "$1" "$2" <<'ZT'
+import json, os, sys
+cj, d, trcmd = sys.argv[1:4]
+os.makedirs(d, exist_ok=True)
+c = json.load(open(cj))
+def row(ts, b): return {"timestamp": ts, "message": {"content": [b]}}
+for l in c["selected"]:
+    cmd = trcmd if l == "test-runner" else "grep -n x tools/"
+    rows = [row("2026-11-24T10:00:00Z", {"type": "tool_use", "id": l + "a", "name": "Bash", "input": {"command": cmd}}),
+            row("2026-11-24T10:01:00Z", {"type": "tool_use", "id": "o_" + l, "name": "StructuredOutput", "input": {"lane": l, "verdict": "PASS", "findings": []}})]
+    open(os.path.join(d, f"agent-{l}.jsonl"), "w").write("\n".join(json.dumps(r) for r in rows) + "\n")
+ZT
+  _pl=$(python3 -c 'import json,sys; print(json.dumps({l:{"status":"PASS"} for l in json.load(open(sys.argv[1]))["selected"]}))' "$T/py-f.json")
+  rm -f "$T/pyrec.jsonl"; PF_LOG="$T/pyrec.jsonl" "$R" record "$G" "$PY" "$_pl" "@$T/py-f.json" "$1" >/dev/null 2>&1
+  python3 -c 'import json,sys; L=[json.loads(l) for l in open(sys.argv[1]) if l.strip()]; r=[e for e in L if e.get("event")=="record"]; print((r[-1].get("outcome") or "")+":"+(r[-1].get("reason") or "") if r else "none:")' "$T/pyrec.jsonl" 2>"$T/py.err"; }
+case "$(_pyrec "$T/py-f-skip" "npx tsc --noEmit")" in refused:suite-not-run) ok "py(f): test-runner 가 Python 명령을 안 돌리면 기록을 거부한다 (suite-not-run)";;
+  *) ng "py(f): Python 명령을 돌리지 않은 게이트가 기록된다 ($(_pyrec "$T/py-f-skip" "npx tsc --noEmit"))" "refused:suite-not-run";; esac
+case "$(_pyrec "$T/py-f-other" "cd /tmp/pf-snap.X && python3 -B -m unittest discover -s tools")" in refused:suite-not-run) ok "py(f): 패턴을 바꿔 돌린 명령은 확정된 명령의 실행이 아니다";;
+  *) ng "py(f): 다른 명령을 확정된 Python 명령의 실행으로 센다" "refused:suite-not-run";; esac
+case "$(_pyrec "$T/py-f-run" "cd /tmp/pf-snap.X && python3 -B -m unittest discover -s tools -p 'test_*.py' 2>&1 | tail -3")" in recorded:*) ok "py(f): 확정된 Python 명령을 돌린 게이트는 기록된다";;
+  *) ng "py(f): 확정된 명령을 돌렸는데 거부한다 ($(_pyrec "$T/py-f-run" "cd /tmp/pf-snap.X && python3 -B -m unittest discover -s tools -p 'test_*.py'"))" "recorded";; esac
+# (g) shell-tool 카테고리 suites 와 함께 — 대체가 아니라 더해진다. Python 테스트가 없으면 기존 suites 그대로다.
+PY="$T/py-g"; ixrepo "$PY"; mkdir -p "$PY/skills/preflight" "$PY/hooks" "$PY/tools"
+printf 'x\n' > "$PY/skills/preflight/meta-test.sh"; printf 'x\n' > "$PY/hooks/preflight-gate.sh"; printf 'def f():\n    return 1\n' > "$PY/skills/preflight/h.py"
+git -C "$PY" add -A; git -C "$PY" "$G" -qm init
+printf 'def f():\n    return 2\n' > "$PY/skills/preflight/h.py"; git -C "$PY" add -A
+_pyg0=$(ixj "$(ixcl "$PY" commit)" '([s["name"] for s in d["laneMeta"]["test-runner"]["suites"]], d["category"])')
+printf 'import unittest\n' > "$PY/tools/test_h.py"; git -C "$PY" add -A
+_pyg1=$(ixj "$(ixcl "$PY" commit)" '([s["name"] for s in d["laneMeta"]["test-runner"]["suites"]], d["category"])')
+[ "$_pyg0" = "(['meta-test'], 'shell-tool')" ] \
+  && ok "py(g): Python 테스트가 없으면 shell-tool suites 는 그대로다" || ng "py(g): Python 규칙이 기존 suites 를 바꿨다 ($_pyg0)" "['meta-test'] shell-tool"
+[ "$_pyg1" = "(['meta-test', 'python-tests:tools'], 'shell-tool')" ] \
+  && ok "py(g): shell-tool suites 에 Python 명령이 더해진다 (대체하지 않는다)" || ng "py(g): 카테고리 suites 와 합쳐지지 않는다 ($_pyg1)" "meta-test + python-tests:tools"
+
+# (y) 회귀 명령이 확정되면 test-runner 프롬프트에 "실행 가능한 테스트가 없다·tsc 만" 을 내지 않는다 — Python 전용 레포는
+#     tscOnly=True(package.json 없음)라 그 문장이 회귀 명령과 함께 나가면 lane 이 회귀 명령을 건너뛰어 suite-not-run 이 된다.
+#     프롬프트는 preflight.js 를 스텁 에이전트로 돌려 받는다(변이 절의 stub-prompts.cjs).
+_PYPJ="$HOME/.claude/skills/preflight/preflight.js"
+ixcl "$T/py-a" commit > "$T/py-y.json"
+_pyy=$(node "$T/stub-prompts.cjs" "$_PYPJ" "$T/py-y.json" 2>"$T/py-y.err" | python3 -c 'import json,sys; t=json.load(sys.stdin).get("test-runner",""); print("discover -s tools" in t, "실행 가능한 테스트가 없다" in t)' 2>>"$T/py-y.err")
+[ "$(ixj "$(cat "$T/py-y.json")" 'd["laneMeta"]["test-runner"]["tscOnly"]')" = "True" ] && [ "$_pyy" = "True False" ] \
+  && ok "py(y): Python 전용 레포의 test-runner 프롬프트는 회귀 명령만 싣고 '실행 가능한 테스트가 없다' 를 내지 않는다" \
+  || ng "py(y): tsc 만 돌리라는 문장이 Python 회귀 명령과 함께 나간다 ($_pyy)" "True False"
+# 대조: 회귀 명령이 없는 TS 레포(테스트 없음)에는 그 문장이 그대로 나간다
+PY="$T/py-y2"; ixrepo "$PY"; mkdir -p "$PY/src"; printf 'export const a = 1;\n' > "$PY/src/a.ts"; git -C "$PY" add -A; git -C "$PY" "$G" -qm init
+printf 'export const a = 2;\n' > "$PY/src/a.ts"; git -C "$PY" add -A; ixcl "$PY" commit > "$T/py-y2.json"
+_pyy2=$(node "$T/stub-prompts.cjs" "$_PYPJ" "$T/py-y2.json" 2>>"$T/py-y.err" | python3 -c 'import json,sys; t=json.load(sys.stdin).get("test-runner",""); print(bool(t), "실행 가능한 테스트가 없다" in t)' 2>>"$T/py-y.err")
+[ "$_pyy2" = "True True" ] && ok "py(y): 회귀 명령 없는 TS 레포에는 tsc 만 문장이 그대로 나간다" || ng "py(y): tsc 만 문장이 사라졌다 ($_pyy2)" "True True"
+
 # R10 — PR 모드는 merge-base..HEAD 의 커밋만 본다.
 IX="$T/ix10"; ixrepo "$IX"; git init -q --bare -b main "$IX.origin.git"; git -C "$IX" remote add origin "$IX.origin.git"
 printf 'a\n' > "$IX/a.txt"; git -C "$IX" add -A; git -C "$IX" "$G" -qm init; git -C "$IX" push -q origin main 2>/dev/null

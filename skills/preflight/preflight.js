@@ -1117,7 +1117,9 @@ function secretScanBlock(s) {
 function laneMetaBlock(lane) {
     const m = laneMeta[lane] ?? {};
     return (
-        (m.tscOnly ? `이 레포에는 실행 가능한 테스트가 없다 — \`tsc --noEmit\` 만 돌리고 jest 는 건너뛴다고 명시해라.\n` : '') +
+        // 분류기가 회귀 명령을 확정했으면(Python 테스트·meta-test 등) "실행 가능한 테스트가 없다·tsc 만" 은 거짓이고, lane 이 따르면
+        // 회귀 명령을 건너뛰어 기록이 suite-not-run 으로 거부된다 — tscOnly 는 jest 기준선일 뿐이라 이때는 내지 않는다.
+        (m.tscOnly && !m.suites?.some(x => x.name !== 'mutation') ? `이 레포에는 실행 가능한 테스트가 없다 — \`tsc --noEmit\` 만 돌리고 jest 는 건너뛴다고 명시해라.\n` : '') +
         (m.eslintConfig === false ? `이 레포에는 eslint 설정이 없다 — 린트 단계는 건너뛰고 그 사실을 보고해라.\n` : '') +
         (m.forcedBy ? `이 lane 은 ${m.forcedBy} 로 강제 실행됐다.\n` : '') +
         (m.conventionScope && lane === 'test-runner'

@@ -58,7 +58,7 @@ out="$gitdir/claude-preflight.classify.json"
 
 SELFDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" GITDIR="$gitdir" ENGINE_VER="$(pf_engine_version)" OVERLAY="$(pf_overlay_dir)" \
 PF_BRANCH="$(pf_branch "$dir")" DIR="$dir" MODE="$mode" CAT_ONLY="$cat_only" QA="$qa" REVIEW="$review" OUT="$out" BODY_FILE="$body_file" MSG_FILE="$msg_file" python3 - <<'PY'
-import json, os, posixpath, re, shlex, subprocess, sys, time
+import ast, json, os, posixpath, re, shlex, subprocess, sys, time
 from pathlib import Path
 
 DIR = os.environ['DIR']; MODE = os.environ['MODE']; QA = os.environ['QA'] == '1'
@@ -674,6 +674,151 @@ if _suites:
     _tm.setdefault('tscOnly', not has_tests())
     _tm.setdefault('eslintConfig', has_eslint())
     _tm['suites'] = _suites
+
+# ── Python 테스트 — 카테고리와 무관한 엔진 공통 규칙이다(DECISIONS.md 2026-11-24 「Python 테스트를 분류기가 확정한다」).
+# .py 로직 변경(주석·공백만이면 제외 — logic_changed 휴리스틱)이 있고 스냅숏에 Python 테스트(test_*.py·*_test.py)가
+# 있으면 회귀 명령을 확정한다. 러너는 스냅숏 내용으로 정한다(_py_runner — pytest 설정·conftest.py·함수형 테스트가 있으면 pytest) — lane 이 고르지 않는다
+# (CONTRACT: suites-decided-by-classifier). 카테고리 suites 를 대체하지 않고 **더한다**.
+# 테스트가 없으면 아무것도 하지 않는다 — test-runner 는 위에서 정한 사유 그대로 남는다.
+# 묶는 단위는 테스트 파일이 있는 디렉터리 자체다. unittest discover 는 -s 아래를 패키지(__init__.py)로만 내려가므로
+# 최상위로 묶으면 비패키지 하위 디렉터리의 테스트가 0개 실행된다(3.12+ 는 exit 5, 그 전은 0개로 통과).
+# 패키지 디렉터리는 __init__.py 가 이어지는 가장 위 패키지의 부모를 -t 로 준다 — import 이름이 패키지 경로가 된다.
+# 다른 디렉터리 a 의 discover 가 이미 수집하는 디렉터리(a→d 사이가 모두 패키지)는 명령을 빼 같은 테스트가 두 번 돌지 않게 한다.
+_PY_TEST = re.compile(r'(?:^|/)(?:test_[^/]*|[^/]*_test)\.py$')
+def _pytest_config():
+    if snap_has('pytest.ini'):
+        return 'pytest.ini'
+    if re.search(r'(?m)^\s*\[tool\.pytest', snap_read('pyproject.toml') or ''):
+        return 'pyproject.toml'
+    for _n in ('setup.cfg', 'tox.ini'):
+        if re.search(r'(?m)^\s*\[(?:tool:)?pytest\]', snap_read(_n) or ''):
+            return _n
+    return None
+# 테스트 파일의 형 — 판정 규칙은 이 함수 하나다. 정규식이 아니라 구문 트리(ast)로 본다: import 문은 근거가 아니다
+# (`from unittest.mock import patch` 를 쓰는 pytest 함수형 파일이 있다), 주석·문자열 안 텍스트는 트리에 없다.
+# 클래스의 베이스는 같은 모듈의 클래스 정의로 따라가 해소한다(순환 방지): 끝 이름이 …TestCase 에 닿으면 unittest 다
+# (`class Base(unittest.TestCase)` + `class TestFoo(Base)`). 베이스가 없거나 object 뿐이거나 같은 모듈 안에서 …TestCase 없이
+# 끝나면 해소된 일반 클래스다. 다른 모듈에서 온 베이스처럼 해소할 수 없으면 그 클래스는 근거로 쓰지 않는다(unknown).
+#   function — 모듈 수준 `def test*`·`async def test*`, 또는 이름이 Test 로 시작하는 해소된 일반 클래스(pytest 클래스형)
+#              (unittest discover 는 0개로 센다)
+#   unittest — …TestCase 로 해소되는 클래스가 있고 위가 없다
+#   none     — 판정할 테스트가 없다(헬퍼만, 해소 불가 클래스만) → 러너 판정에서 뺀다
+#   parse-error — 파싱 실패 → pytest 쪽으로 기운다(0개 실행으로 통과하는 것보다 실패가 낫다)
+def _py_base_name(b):
+    if isinstance(b, ast.Subscript):
+        b = b.value
+    return b.id if isinstance(b, ast.Name) else b.attr if isinstance(b, ast.Attribute) else ''
+def _py_class_kind(cls, local, seen=()):
+    """'testcase'(…TestCase 로 해소) · 'plain'(같은 모듈 안에서 …TestCase 없이 끝남) · 'unknown'(해소 불가)."""
+    kinds = []
+    for b in cls.bases:
+        nm = _py_base_name(b)
+        if nm.endswith('TestCase'):
+            return 'testcase'
+        if isinstance(b, ast.Name) and nm == 'object':
+            kinds.append('plain')
+        elif isinstance(b, ast.Name) and nm in local and nm not in seen:
+            kinds.append(_py_class_kind(local[nm], local, seen + (cls.name,)))
+        else:
+            kinds.append('unknown')
+    if 'testcase' in kinds:
+        return 'testcase'
+    return 'unknown' if 'unknown' in kinds else 'plain'
+def _py_test_style(f):
+    try:
+        tree = ast.parse(snap_read(f) or '', filename=f)
+    except Exception:
+        return 'parse-error'
+    local = {n.name: n for n in tree.body if isinstance(n, ast.ClassDef)}
+    fn = tc = False
+    for n in tree.body:
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name.startswith('test'):
+            fn = True
+        elif isinstance(n, ast.ClassDef):
+            k = _py_class_kind(n, local, (n.name,))
+            if k == 'testcase':
+                tc = True
+            elif k == 'plain' and n.name.startswith('Test'):
+                fn = True
+    return 'function' if fn else 'unittest' if tc else 'none'
+def _py_runner(tests):
+    """러너와 그 근거. pytest 신호(설정·conftest.py·함수형/클래스형·파싱 실패)가 하나라도 있으면 pytest, 없을 때만 unittest."""
+    cfg = _pytest_config()
+    why = []
+    if cfg:
+        why.append('config')
+    if any(posixpath.basename(f) == 'conftest.py' for f in SNAP):
+        why.append('conftest')
+    styles = {f: _py_test_style(f) for f in tests}
+    fn = [f for f in tests if styles[f] == 'function']
+    if fn:
+        why.append('function-style')
+    pe = [f for f in tests if styles[f] == 'parse-error']
+    if pe:
+        why.append('parse-error')
+    return ('pytest' if why else 'unittest'), why, cfg, fn + pe
+def _py_pkg(d):
+    return d != '.' and snap_has(f'{d}/__init__.py')
+def _py_parent(d):
+    return posixpath.dirname(d) or '.'
+def _py_under(a, d):
+    """a 가 d 의 진조상인가."""
+    return a != d and (a == '.' or d.startswith(a + '/'))
+def _py_collected_by(a, d):
+    """`discover -s a` 가 d 로 내려가는가 — a 아래부터 d 까지 모든 디렉터리가 패키지다."""
+    p = d
+    while p != a:
+        if not _py_pkg(p):
+            return False
+        p = _py_parent(p)
+    return True
+def _py_top(d):
+    """패키지 d 의 -t: __init__.py 가 이어지는 가장 위 패키지의 부모."""
+    p = d
+    while _py_pkg(_py_parent(p)):
+        p = _py_parent(p)
+    return _py_parent(p)
+def _python_suites():
+    _logic = [f for f in changed if f.endswith('.py') and logic_changed(f)]
+    _tests = sorted(f for f in SNAP if _PY_TEST.search(f))
+    if not (_logic and _tests):
+        return [], None
+    _dirs = {}
+    for f in _tests:
+        _dirs.setdefault(posixpath.dirname(f) or '.', set()).add(
+            'test_*.py' if posixpath.basename(f).startswith('test_') else '*_test.py')
+    _runner, _why, _cfg, _fn = _py_runner(_tests)
+    # marker 는 명령 그 자체다 — 기록 단계(receipt.sh suite-not-run)가 전사에서 이 문자열이 명령 자리에 왔는지 센다.
+    if _runner == 'pytest':
+        # pytest 는 비패키지 하위도 수집한다 — 조상이 이미 인자에 있는 디렉터리는 뺀다.
+        _run = sorted(d for d in _dirs if not any(_py_under(a, d) for a in _dirs))
+        _mk = 'python3 -B -m pytest -q -p no:cacheprovider ' + ' '.join(shlex.quote(d) for d in _run)
+        _out = [{'name': 'python-tests', 'marker': _mk, 'cmd': f'cd {SNAP_TOKEN} && {_mk}', 'why': _logic}]
+    else:
+        _out, _run = [], []
+        for d in sorted(_dirs):
+            for _pat in sorted(_dirs[d], key=lambda p: p != 'test_*.py'):
+                if any(_py_under(a, d) and _pat in _dirs[a] and _py_collected_by(a, d) for a in _dirs):
+                    continue
+                _mk = (f'python3 -B -m unittest discover -s {shlex.quote(d)}'
+                       + (f' -t {shlex.quote(_py_top(d))}' if _py_pkg(d) else '')
+                       + f' -p {shlex.quote(_pat)}')
+                _out.append({'name': f'python-tests:{d}' + (f':{_pat}' if len(_dirs[d]) > 1 else ''),
+                             'marker': _mk, 'cmd': f'cd {SNAP_TOKEN} && {_mk}', 'why': _logic})
+                if d not in _run:
+                    _run.append(d)
+    return _out, {'reason': f'python-tests — .py 로직 변경 {len(_logic)}개, 스냅숏의 Python 테스트 {len(_tests)}개',
+                  'runner': _runner, 'why': _why, 'config': _cfg, 'functionStyle': _fn[:5], 'dirs': _run}
+_py_suites, _py_meta = _python_suites()
+if _py_suites:
+    if 'test-runner' not in selected:
+        selected['test-runner'] = sorted({f for s in _py_suites for f in s['why']})
+        notSelected.pop('test-runner', None)
+    _tm = meta.setdefault('test-runner', {})
+    _tm.setdefault('tscOnly', not has_tests())
+    _tm.setdefault('eslintConfig', has_eslint())
+    _tm.setdefault('suites', []).extend(_py_suites)
+    _tm['pythonTests'] = _py_meta
 
 xr = sorted(set(types_files) | set(surface_hits))
 if xr:
