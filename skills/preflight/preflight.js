@@ -6,7 +6,7 @@ export const meta = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// args: { repo, mode, classification | (classificationScript + classificationSha256), baseline?, round?, prBodyFile?, runId? }
+// args: { repo, mode, classification | (classificationScript + classificationSha256), baseline?, round?, prBodyFile?, runId?, autoRecord? }
 //   classification 은 classify.sh 의 출력 그대로다. 이 워크플로는 lane 을 **고르지 않는다** —
 //   고르는 일은 결정론적 스크립트의 몫이고, 여기서는 실행·집계만 한다.
 //   분류 JSON 이 커서 인라인으로 못 넘기면 SKILL.md 의 pf_gate_args 가 내는 classificationScript(데이터 스크립트
@@ -18,6 +18,8 @@ export const meta = {
 //       notes 는 판정을 바꾸지 않는 참고 findings 다 — 없으면 verdict=PASS 로 온 것이 사라진다.
 //       claimRemeasure 는 사실 주장 재측정(③)의 대상·결과다 — 판정·영수증에 들어가지 않는다(대상이 없으면 null).
 //       measurement 는 측정 전용 lane override(args.laneModel·laneEffort)다 — 있으면 verdict·lane 상태가 MEASUREMENT_ONLY 다.
+//       recorded 는 워크플로 안 기록의 결과 {status: RECORDED|REFUSED|ERROR|SKIPPED, reason, output} 다 — PASS 일 때만
+//       기록 에이전트가 `receipt.sh record` 를 부른다(args.autoRecord === false 면 끈다). RECORDED 가 아니면 메인이 기록한다.
 // ─────────────────────────────────────────────────────────────────────────────
 // BEGIN classification-load — meta-test 가 이 구간만 떼어 실행한다. 바깥 이름을 참조하지 마라.
 // CONTRACT: classification-file-verified
@@ -138,6 +140,66 @@ const NO_GIT_STATE =
     `- 미완료 머지·충돌·더러운 워킹트리·밀리지 않은 커밋처럼 손대고 싶은 상태를 보면 **고치지 말고** 보고(구조화 출력이 있으면 그 안에)하고 멈춰라.\n`;
 const gateAgent = (prompt, opts) => agent(`${NO_GIT_STATE}\n${prompt}`, opts);
 // END no-git-state
+
+// ── 워크플로 안에서 기록 (DECISIONS.md 2026-11-24 「워크플로 안에서 기록」).
+// 집계가 PASS 면 메인 세션이 receiptLanes 를 파일로 옮겨 record 를 부르는 턴을 없애려고, 기록 에이전트가
+// `receipt.sh record` 한 명령을 돌린다. 워크플로 스크립트는 셸·파일 쓰기·자기 전사 경로가 없으므로:
+//   · lane 결과는 UTF-8 바이트의 base64 와 sha256 으로 넘긴다 — 에이전트가 옮겨 적다 한 글자라도 바뀌면
+//     receipt.sh 가 `lanes-digest-mismatch` 로 거부한다(분류 적재와 같은 원리, 같은 _sha256Hex·_utf8Encode).
+//   · 전사 디렉터리는 표식(marker)으로 찾게 한다 — 이 표식은 기록 에이전트의 프롬프트·명령에만 실리므로
+//     receipt.sh 가 최근 전사에서 그것을 grep 해 이 워크플로의 wf 디렉터리 하나를 고르고, 그 디렉터리로
+//     기존 전사 검증(no-lane-evidence·concealed-promotion·sequence-violated)을 그대로 돌린다.
+// FAIL·NEEDS_CONFIRM·측정 전용·args.autoRecord === false 면 부르지 않는다 — waiver 는 사용자 승인이라 메인 몫이다.
+// 기록이 안 되면(REFUSED·ERROR·SKIPPED) 결과의 next 가 지금까지처럼 메인이 record 하라고 안내한다(폴백).
+// CONTRACT: auto-record-pass-only
+// BEGIN auto-record — meta-test 가 이 구간을 classification-load 구간과 함께 떼어 실행한다. 그 밖의 바깥 이름을 참조하지 마라.
+const RECORD_RESULT = {
+    type: 'object', required: ['exitCode', 'stdout'],
+    properties: { exitCode: { type: 'integer' }, stdout: { type: 'string' }, stderr: { type: 'string' } },
+};
+function _b64Encode(bytes) {
+    const A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    let s = '';
+    for (let i = 0; i < bytes.length; i += 3) {
+        const b0 = bytes[i], b1 = i + 1 < bytes.length ? bytes[i + 1] : 0, b2 = i + 2 < bytes.length ? bytes[i + 2] : 0;
+        const n = (b0 << 16) | (b1 << 8) | b2;
+        s += A[(n >> 18) & 63] + A[(n >> 12) & 63] +
+            (i + 1 < bytes.length ? A[(n >> 6) & 63] : '=') + (i + 2 < bytes.length ? A[n & 63] : '=');
+    }
+    return s;
+}
+// 기록할지와 그 명령. 반환: { skip } 또는 { marker, sha256, cmd }.
+// nonce 는 args.runId || classification.runNonce, clsSha 는 분류 바이트 sha256(인라인 입력이면 분류 객체 직렬화의 sha256).
+function autoRecordPlan(o) {
+    if (o.verdict !== 'PASS') return { skip: `verdict ${o.verdict}` };
+    if (o.measureOnly) return { skip: '측정 전용 실행 (laneModel·laneEffort override)' };
+    if (o.autoRecord === false) return { skip: 'args.autoRecord === false' };
+    if (typeof o.engineDir !== 'string' || !o.engineDir.startsWith('/'))
+        return { skip: '분류에 engineDir 이 없다 (이 엔진보다 낡은 classify.sh)' };
+    const bytes = _utf8Encode(JSON.stringify(o.receiptLanes));
+    const sha256 = _sha256Hex(bytes);
+    const tail = String(o.nonce || '').replace(/[^A-Za-z0-9_-]/g, '').slice(-24) || 'shared';
+    const marker = `pf-record:${tail}:${String(o.clsSha).slice(0, 16)}`;
+    const q = x => `'${String(x).replace(/'/g, `'\\''`)}'`;
+    // record 는 commit|pr 만 받는다. all 분류는 commit 기록으로 받는다(lib.sh pf_ok_modes).
+    const kind = o.mode === 'pr' ? 'pr' : 'commit';
+    const cmd = `bash ${q(o.engineDir.replace(/\/+$/, '') + '/receipt.sh')} record ${kind} ${q(o.repo)} ` +
+        `--lanes-b64=${_b64Encode(bytes)} --lanes-sha256=${sha256} --transcripts-marker=${marker}`;
+    return { marker, sha256, cmd };
+}
+// 기록 에이전트의 구조화 출력 → recorded. 성공은 종료코드 0 과 receipt.sh 의 `recorded: ` 줄 둘 다다.
+function autoRecordStatus(r) {
+    if (!r || typeof r !== 'object' || !Number.isInteger(r.exitCode))
+        return { status: 'ERROR', reason: '기록 에이전트가 결과를 내지 못했다 (사망·타임아웃·스키마 위반)', output: '' };
+    const out = String(r.stdout ?? '') + (r.stderr ? `\n${r.stderr}` : '');
+    const output = out.split('\n').filter(l => l.trim()).slice(-12).join('\n');
+    if (r.exitCode === 0 && /^recorded: /m.test(String(r.stdout ?? '')))
+        return { status: 'RECORDED', reason: 'receipt.sh record 통과 (via workflow)', output };
+    if (r.exitCode !== 0)
+        return { status: 'REFUSED', reason: `receipt.sh record 종료코드 ${r.exitCode}`, output };
+    return { status: 'ERROR', reason: '종료코드 0 인데 `recorded: ` 줄이 없다', output };
+}
+// END auto-record
 
 const selected = cls.selected ?? {};
 const notSelected = cls.notSelected ?? {};
@@ -1564,6 +1626,44 @@ const report =
 // 판정·보고는 위에서 평소대로 계산했다 — 바꾸는 것은 밖으로 나가는 상태 필드뿐이다.
 markMeasurementOnly(lanes);
 
+// 영수증은 판정에 쓰는 필드만 담는다 — findings 원본까지 넣으면 영수증이 붓는다.
+// waived 는 여기서 세팅하지 않는다: 승인은 사람이 하고, 호출자가 이 객체를 고쳐
+// receipt.sh 에 넘긴다 (아래 next 문구). 여기에 통과 분기를 두면 자동 승인 경로가
+// 있는 것처럼 읽힌다.
+const receiptLanes = Object.fromEntries(
+    Object.entries(lanes).map(([l, v]) => [l, {
+        status: v.status,
+        ...(v.reason ? { reason: v.reason } : {}),
+    }]),
+);
+
+// ── 워크플로 안에서 기록 (CONTRACT: auto-record-pass-only). 스냅숏·재측정 정리는 위에서 이미 끝났다 —
+//    기록 에이전트가 이 워크플로의 마지막 에이전트다. 기록 시점에 이 에이전트 자신은 결과가 없지만 lane 이
+//    아니어서(구조화 출력에 lane 이 없다) 전사 검증의 귀속 대상이 아니다.
+const recPlan = autoRecordPlan({
+    verdict, measureOnly: MEASURE_ONLY, autoRecord: args?.autoRecord, engineDir: cls.engineDir,
+    receiptLanes, mode, repo, nonce: args?.runId || cls.runNonce,
+    clsSha: clsLoad.sha256 ?? _sha256Hex(_utf8Encode(JSON.stringify(cls))),
+});
+let recorded;
+if (recPlan.skip) {
+    recorded = { status: 'SKIPPED', reason: recPlan.skip, output: '' };
+} else {
+    phase('Record');
+    const r = await gateAgent(
+        `아래 명령 **하나만** 글자 그대로 실행하고, 종료코드·stdout·stderr 를 **고치지 말고** 돌려줘라.\n` +
+            `다른 명령은 실행하지 마라. 실패해도 다시 시도하지 마라. 출력을 요약하거나 해석하지 마라.\n` +
+            `전사 표식: ${recPlan.marker}\n` +
+            `- \`${recPlan.cmd}\``,
+        { label: 'record', phase: 'Record', schema: RECORD_RESULT, model: 'haiku', effort: 'low' },
+    ).catch(() => null);
+    recorded = autoRecordStatus(r);
+}
+log(`기록: ${recorded.status} — ${recorded.reason}`);
+const recordedNext = mode === 'pr'
+    ? '`gh pr create`(본문은 검사한 --body-file 그대로)를'
+    : `\`git -C ${repo} commit\` 을`;
+
 return {
     repo,
     mode,
@@ -1572,16 +1672,9 @@ return {
     // 측정 전용 override 가 있었으면 그 값, 없으면 null — 채점기가 manifest 와 대조한다
     measurement: MEASURE_ONLY ? { verdict, laneModel: LANE_MODEL, laneEffort: LANE_EFFORT } : null,
     lanes,                   // 전체 lane 상태 + findings 원본 (사람이 볼 것)
-    // 영수증은 판정에 쓰는 필드만 담는다 — findings 원본까지 넣으면 영수증이 붓는다.
-    // waived 는 여기서 세팅하지 않는다: 승인은 사람이 하고, 호출자가 이 객체를 고쳐
-    // receipt.sh 에 넘긴다 (아래 next 문구). 여기에 통과 분기를 두면 자동 승인 경로가
-    // 있는 것처럼 읽힌다.
-    receiptLanes: Object.fromEntries(
-        Object.entries(lanes).map(([l, v]) => [l, {
-            status: v.status,
-            ...(v.reason ? { reason: v.reason } : {}),
-        }]),
-    ),
+    receiptLanes,
+    // 워크플로 안 기록의 결과 — RECORDED 면 메인은 record 를 다시 부르지 않는다. 아니면 next 가 폴백을 안내한다.
+    recorded,
     blocking,
     warnings,
     notes,
@@ -1598,11 +1691,16 @@ return {
                                                         ...(x.snapshotMayDiffer ? { snapshotMayDiffer: x.snapshotMayDiffer } : {}) })),
     } : null,
     baseline: baseline?.metrics ?? null,
-    report,
+    report: report + `\n\n기록: ${recorded.status} — ${recorded.reason}` +
+        (recorded.status === 'REFUSED' || recorded.status === 'ERROR' ? (recorded.output ? `\n${recorded.output}` : '') : ''),
     next: MEASURE_ONLY
         ? '측정 전용 실행이다(laneModel·laneEffort override) — receipt.sh record 로 기록하지 마라. 기록해도 MEASUREMENT_ONLY 상태라 거부된다. 판정은 lanes[].measuredStatus 에 있다.'
+        : verdict === 'PASS' && recorded.status === 'RECORDED'
+            ? `기록됨 — 워크플로 안에서 receipt.sh record 가 통과했다(via workflow). record 를 다시 부르지 마라. ` +
+              `커밋 전 보고·승인 규칙은 그대로이고, 승인되면 ${recordedNext} 별도 Bash 호출로 실행해라.`
         : verdict === 'PASS'
-            ? 'receipt.sh record 로 기록해라. 스테이징은 분류 전에 끝났어야 한다 (git add → classify 순서) — **분류 뒤 인덱스가 바뀌면 재분류**하라(record 가 index-changed 로 거부한다). **워크플로 결과의 Transcript dir 을 마지막 인자로 그대로 넘겨라** — 넘겨야 실행 사실·순서·승인 흔적이 검증된다.'
+            ? (recorded.status === 'SKIPPED' ? '' : `워크플로 안 기록이 되지 않았다(${recorded.status}: ${recorded.reason}) — 메인이 기록한다. `) +
+              'receipt.sh record 로 기록해라. 스테이징은 분류 전에 끝났어야 한다 (git add → classify 순서) — **분류 뒤 인덱스가 바뀌면 재분류**하라(record 가 index-changed 로 거부한다). **워크플로 결과의 Transcript dir 을 마지막 인자로 그대로 넘겨라** — 넘겨야 실행 사실·순서·승인 흔적이 검증된다.'
             : verdict === 'NEEDS_CONFIRM'
               ? '사용자에게 warning 을 보이고 승인받아라. 승인받으면 해당 lane 만 {"status":"PASS","waived":true,"originalStatus":"WARNING","reason":"<승인 내용>"} 로 바꿔 기록한다. **전사 디렉터리를 record 에 넘기면** waived 없는 승격을 receipt 가 거부한다 (안 넘기면 규약일 뿐 강제되지 않는다).'
               : 'blocking 을 고친 뒤 classify 부터 다시 실행해라. 부분 재실행하지 마라.',

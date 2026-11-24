@@ -389,3 +389,36 @@ a=70 a_sessions=13 b=62 main=202 home=45 norepo=78 path_outside_repo=9
   같은 폴더를 두 세션이 쓰면 마지막 것이 남는다(내용은 같은 설치본이면 같다). 커밋 훅의 deny 안내는 아직 `preflight-fast.sh` 를 가리킨다.
 - **어디**: `preflight-run.sh`(신규), `lib.sh`(`pf_fast_*`), `preflight-fast.sh`(공용 함수 사용), `SKILL.md`(맨 앞·§ 1·§ 2·gate-args 블록),
   `meta-test/engine.sh`(RUN-a~g). `ENGINE_VERSION` 2.4 → **2.5**(호환되는 추가 — 새 진입점, 프로필 계약은 그대로).
+
+### 워크플로 안에서 기록
+
+- **왜**: 게이트가 PASS 면 메인 세션이 워크플로 결과에서 `receiptLanes` 를 꺼내 파일로 쓰고 `receipt.sh record` 를 다시 부르느라
+  게이트마다 메인 턴이 더 들었다(관찰 — 집계 스크립트가 이 레포 밖에 있어 수치는 적지 않는다). 메인 턴은 큰 컨텍스트를 다시 읽어
+  비싸다. 워크플로 스크립트는 셸을 못 돌리고 파일을 못 쓰며 자기 전사 디렉터리 경로를 모르므로, 기록은 에이전트 하나가 한다.
+- **무엇**: `preflight.js` 의 마지막 단계 — 집계 verdict 가 PASS 이고 측정 전용이 아니고 `args.autoRecord !== false` 이면
+  haiku·effort low 기록 에이전트(label `record`, `gateAgent` 경유)가 명령 **하나**만 돌린다:
+  `bash <engineDir>/receipt.sh record commit|pr <repo> --lanes-b64=<b64> --lanes-sha256=<hex> --transcripts-marker=pf-record:<꼬리>:<16hex>`.
+  `engineDir` 은 `classify.sh` 가 분류에 싣는다(새 키). 꼬리는 `args.runId || classification.runNonce`, 16hex 는 분류 바이트 sha256
+  (인라인 분류면 분류 객체 직렬화의 sha256) 앞 16자다. 결과에 `recorded: {status: RECORDED|REFUSED|ERROR|SKIPPED, reason, output}` 이
+  붙고, RECORDED 면 `next` 가 "record 를 다시 부르지 말고 커밋으로", 아니면 지금까지의 메인 기록 안내다. FAIL·NEEDS_CONFIRM 은
+  부르지 않는다 — waiver 는 사용자 승인이라 메인 몫이다. `receipt.sh record` 는 두 옵션을 새로 받는다: `--lanes-b64`+`--lanes-sha256`
+  (디코드 바이트 sha256 이 다르면 `lanes-digest-mismatch`), `--transcripts-marker`(설정 루트 `CLAUDE_CONFIG_DIR` 또는 `~/.claude` 의
+  `projects/*/*/subagents/workflows/wf_*/agent-*.jsonl` 중 최근 6시간 안에 바뀐 전사에서 표식을 찾아 wf 디렉터리가 정확히 하나일 때만
+  쓴다 — 아니면 `transcripts-marker-unresolved`). 표식을 주면 기록 경로 표시가 `via: workflow` 가 되고(로그·영수증), 표식 없이
+  `PF_RECORD_VIA=workflow` 는 `via-unknown` 이다. 그 뒤 검사는 위치 인자 형태와 같다.
+- **충실도**: lane 결과는 모델이 명령에 옮겨 적으므로 sha256 으로 대조한다 — 분류 적재와 같은 `_sha256Hex`·`_utf8Encode` 로 워크플로가
+  계산하고 receipt.sh 가 디코드 바이트로 다시 계산한다(한 글자라도 바뀌면 거부). 옮겨 적기 전에 lane 상태를 바꾸는 위조는 이 대조가
+  아니라 기존 전사 검증(`no-lane-evidence`·`concealed-promotion`·`sequence-violated`)이 잡는다 — 표식으로 찾은 디렉터리는 그 워크플로의
+  lane 전사가 든 디렉터리다. 기록 시점에 워크플로는 끝나지 않았다: 기록 에이전트 자신은 결과가 없고, 스냅숏·재측정 정리는 집계 전에
+  끝나므로 기록이 마지막 에이전트다. 기록·정리 에이전트는 구조화 출력에 `lane` 이 없어 전사 귀속(수락된 `StructuredOutput.lane` 만)에
+  들어가지 않는다 — 별도 무시 규칙을 두지 않았고, lane 전사 없이 그 둘만 있는 디렉터리는 그대로 `no-lane-evidence` 다(meta-test WR-d).
+- **한계**: 기록 에이전트가 결과를 지어내 RECORDED 로 보고해도(종료코드 0 과 `recorded: ` 줄) 영수증이 없으면 커밋 훅의 verify 가
+  막는다 — 그때 메인이 기록하면 된다. 같은 꼬리·같은 분류로 워크플로를 두 번 돌리면 표식이 두 디렉터리에 있어 거부된다(폴백).
+  표식의 16hex 를 분류 artifact 와 대조하지는 않는다 — 탐색 키일 뿐이다. base64 가 길어 모델이 옮기다 틀릴 수 있고, 그때는
+  `lanes-digest-mismatch` 로 폴백한다. 턴 감소는 아직 재지 않았다. `eval/flip.sh` 실행은 `autoRecord: false` 를 넘겨
+  측정 입력 레포에 영수증을 남기지 않는다.
+- **폴백**: `recorded.status` 가 RECORDED 가 아니면 지금까지처럼 메인이 `receiptLanes` 를 파일로 써서
+  `receipt.sh record … @<lanes.json> "" <Transcript dir>` 로 기록한다(SKILL.md § 4).
+- **어디**: `preflight.js`(BEGIN auto-record · CONTRACT `auto-record-pass-only`, 결과 `recorded`), `receipt.sh`(CONTRACT
+  `workflow-record-inputs`, via 어휘), `classify.sh`(`engineDir`), `SKILL.md`(§ 4·관측 로그), `meta-test/engine.sh`(WR-a~g).
+  `ENGINE_VERSION` 2.5 → **2.6**(호환되는 추가 — 새 옵션·결과 키, 위치 인자 형태는 그대로).

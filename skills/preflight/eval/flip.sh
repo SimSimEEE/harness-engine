@@ -186,6 +186,7 @@ def run_one(job):
     args = json.load(open(os.path.join(base, 'args.json')))
     # 실행마다 고유 runId — 없으면 겹친 실행이 분류의 runNonce 로 같은 스냅숏 폴더를 쓴다
     args['runId'] = f'flip-{tag}-{n}-{i}'
+    args['autoRecord'] = False   # 측정 실행은 영수증을 남기지 않는다(워크플로 안 기록을 끈다)
     wr = os.path.join(base, f'run-{i}.wf.js')
     # 인자는 리터럴로 담는다 — 헤드리스 세션에 JSON 을 중계시키면 문자열로 넘어가 워크플로가 args 를 못 읽는다
     open(wr, 'w').write(

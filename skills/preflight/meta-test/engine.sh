@@ -1234,7 +1234,7 @@ grep -qF '참고 (판정에 영향 없음)' "$PJ" \
   && ok "리포트에 참고 섹션이 있다" || ng "수집만 하고 보여주지 않는다" "참고 섹션"
 grep -qF '판정은 FAIL 인데 blocking findings 가 없다' "$PJ" \
   && ok "FAIL + blocking 0건일 때 사유를 보여준다" || ng "무엇을 고칠지 알 수 없다" "FAIL 폴백"
-grep -q 'receiptLanes: Object.fromEntries' "$PJ" \
+grep -qE 'receiptLanes( =|:) Object.fromEntries' "$PJ" \
   && ok "영수증에는 판정 필드만 담는다" || ng "findings 원본까지 영수증에 들어간다" "receiptLanes 투영"
 # 이 파일 안에서 waived 를 세팅하는 코드가 없으므로 통과 분기는 죽은 코드다 —
 # 자동 승인 경로가 있는 것처럼 읽힌다
@@ -5796,3 +5796,194 @@ P="$HOME/.claude/skills/preflight" bash -c '. "$1"; pf_gate_args "$2" commit --r
 [ "$_rnga" = 2 ] && [ ! -s "$T/rn-ga.out" ] \
   && ok "RUN-g: gate-args 블록은 classify.sh 실패 코드를 그대로 돌려주고 출력이 없다" || ng "RUN-g: 블록이 분류 실패를 전달하지 않는다 (rc=$_rnga)" "rc=2, 출력 없음"
 # END preflight-run
+
+# BEGIN workflow-record — 워크플로 안에서 기록(DECISIONS.md 2026-11-24 「워크플로 안에서 기록」)
+echo "== 워크플로 안에서 기록 (receipt.sh --lanes-b64 · --transcripts-marker · preflight.js 기록 에이전트) =="
+WRD="$T/wfrec"; rm -rf "$WRD"; mkdir -p "$WRD"
+WRC="$WRD/cfg"                    # CLAUDE_CONFIG_DIR — 전사 루트는 $WRC/projects
+ssrepo "$WRD/r" plain; printf 'more\n' >> "$WRD/r/a.txt"; git -C "$WRD/r" add a.txt
+"$CL" "$WRD/r" commit > "$WRD/r.cls.json" 2>"$T/wr-cl.err"
+WRL=$(python3 -c 'import json,sys; print(json.dumps({k:{"status":"PASS"} for k in json.load(open(sys.argv[1]))["selected"]}, separators=(",",":")))' "$WRD/r.cls.json")
+# 전사 픽스처: wf 디렉터리 하나에 lane 전사(도구 실행 + 수락된 구조화 출력)와, 아직 결과가 없는 기록 에이전트
+# 전사(프롬프트에 표식 · 명령 하나 · 구조화 출력 없음), 그리고 정리 에이전트 전사를 둔다 — 실제 기록 시점의 모양이다.
+# 인자: <wf 디렉터리> <표식|-> <lane 전사를 쓸지 1|0>
+wrwf(){ python3 - "$1" "$2" "$3" "$WRD/r.cls.json" <<'ZW'
+import json, os, sys
+d, marker, with_lanes, cj = sys.argv[1], sys.argv[2], sys.argv[3] == '1', sys.argv[4]
+os.makedirs(d, exist_ok=True)
+lanes = list(json.load(open(cj))["selected"])
+row = lambda ts, b: {"timestamp": ts, "message": {"content": [b]}}
+if with_lanes:
+    for l in lanes:
+        rows = [{"timestamp": "2026-11-24T10:00:00Z", "message": {"role": "user", "content": f"lane {l} prompt"}},
+                row("2026-11-24T10:00:01Z", {"type": "tool_use", "id": l + "a", "name": "Bash", "input": {"command": "git diff --stat"}}),
+                row("2026-11-24T10:00:05Z", {"type": "tool_use", "id": "o_" + l, "name": "StructuredOutput",
+                                             "input": {"lane": l, "verdict": "PASS", "findings": []}})]
+        open(os.path.join(d, f"agent-a{abs(hash(l)) % 10**8:08d}.jsonl"), "w").write("\n".join(json.dumps(r) for r in rows) + "\n")
+# 정리 에이전트 — 도구만 쓰고 구조화 출력이 없다
+open(os.path.join(d, "agent-cleanup0.jsonl"), "w").write("\n".join(json.dumps(r) for r in [
+    {"timestamp": "2026-11-24T10:00:06Z", "message": {"role": "user", "content": "snapshot cleanup"}},
+    row("2026-11-24T10:00:07Z", {"type": "tool_use", "id": "c1", "name": "Bash", "input": {"command": "bash snapshot.sh remove x y"}})]) + "\n")
+# 기록 에이전트 — 진행 중(결과 없음). 명령 문자열에 lane 이름이 들어 있어도 lane 증거가 아니다
+if marker != '-':
+    open(os.path.join(d, "agent-record0.jsonl"), "w").write("\n".join(json.dumps(r) for r in [
+        {"timestamp": "2026-11-24T10:00:08Z", "message": {"role": "user", "content": f"전사 표식: {marker}\n- `receipt.sh record`"}},
+        row("2026-11-24T10:00:09Z", {"type": "tool_use", "id": "r1", "name": "Bash",
+                                     "input": {"command": f"bash receipt.sh record commit x --transcripts-marker={marker} # " + " ".join(lanes)}})]) + "\n")
+open(os.path.join(d, "journal.jsonl"), "w").write('{"type":"start"}\n')
+ZW
+}
+wrb64(){ printf '%s' "$1" | python3 -c 'import base64,sys; print(base64.b64encode(sys.stdin.buffer.read()).decode())'; }
+wrsha(){ printf '%s' "$1" | shasum -a 256 | cut -d' ' -f1; }
+# 기록 실행 — 종료코드 WRRC, 출력 $T/wr.out, 관측 로그 $T/wr.jsonl(실행마다 비운다)
+wrrec(){ rm -f "$T/wr.jsonl"; CLAUDE_CONFIG_DIR="$WRC" PF_LOG="$T/wr.jsonl" "$R" record commit "$WRD/r" "$@" > "$T/wr.out" 2>&1; WRRC=$?; }
+wrlog(){ python3 -c 'import json,sys,os
+L=[json.loads(l) for l in open(sys.argv[1]) if l.strip()] if os.path.exists(sys.argv[1]) else []
+r=[e for e in L if e.get("event")=="record"]
+print((r[-1].get("outcome"), r[-1].get("reason"), r[-1].get("via")) if r else ("none", None, None))' "$T/wr.jsonl" 2>"$T/py.err"; _pytb "$1"; }
+wrrcpt(){ python3 -c 'import json,sys; e=json.load(open(sys.argv[1]))["branches"]["main"]["commit"]; print(e.get("via"), e["procedure"].get("via"), e["procedure"].get("evidenceSource","").endswith(sys.argv[2]))' \
+  "$(git -C "$WRD/r" rev-parse --absolute-git-dir)/claude-preflight.json" "$1" 2>"$T/py.err"; _pytb "$2"; }
+WRB=$(wrb64 "$WRL"); WRS=$(wrsha "$WRL")
+MK1="pf-record:aaa111:0123456789abcdef"
+wrwf "$WRC/projects/p1/s1/subagents/workflows/wf_one" "$MK1" 1
+
+# (1)·(3)·(4)·(5) b64+sha 가 맞고 표식이 wf 디렉터리 하나에 있으면 — 진행 중인 기록 에이전트·정리 에이전트 전사가 섞여도 — 기록된다
+wrrec "--lanes-b64=$WRB" "--lanes-sha256=$WRS" "--transcripts-marker=$MK1"
+[ "$WRRC" = 0 ] && [ "$(wrlog $LINENO)" = "('recorded', None, 'workflow')" ] && [ "$(wrrcpt wf_one $LINENO)" = "workflow workflow True" ] \
+  && grep -q '^recorded: .* · via workflow' "$T/wr.out" \
+  && ok "WR-a: --lanes-b64·--lanes-sha256 + 표식으로 찾은 wf 디렉터리 하나 → 기록 (진행 중 기록 에이전트·정리 에이전트 전사 무시, 로그·영수증 via workflow)" \
+  || ng "WR-a: 워크플로 안 기록이 통과하지 못했다 (rc=$WRRC $(wrlog $LINENO) $(tail -3 "$T/wr.out" | tr '\n' ' '))" "rc=0 ('recorded', None, 'workflow')"
+# (2) sha 불일치 — 한 글자만 다른 lanes
+WRL2=$(printf '%s' "$WRL" | sed 's/PASS/PASs/')
+wrrec "--lanes-b64=$(wrb64 "$WRL2")" "--lanes-sha256=$WRS" "--transcripts-marker=$MK1"
+[ "$WRRC" = 1 ] && [ "$(wrlog $LINENO)" = "('refused', 'lanes-digest-mismatch', 'workflow')" ] \
+  && ok "WR-b: 디코드 바이트의 sha256 이 다르면 lanes-digest-mismatch 로 거부" \
+  || ng "WR-b: 옮겨 적다 바뀐 lane 결과가 받아졌다 (rc=$WRRC $(wrlog $LINENO))" "rc=1 lanes-digest-mismatch"
+wrrec "--lanes-b64=$WRB" "--transcripts-marker=$MK1"
+[ "$WRRC" = 1 ] && [ "$(wrlog $LINENO)" = "('refused', 'lanes-digest-mismatch', 'workflow')" ] \
+  && ok "WR-b: --lanes-sha256 없이 --lanes-b64 만 주면 거부" || ng "WR-b: 해시 없는 b64 가 받아졌다 (rc=$WRRC $(wrlog $LINENO))" "lanes-digest-mismatch"
+# (3) 표식 0개·2개
+wrrec "--lanes-b64=$WRB" "--lanes-sha256=$WRS" "--transcripts-marker=pf-record:nobody:0123456789abcdef"
+_wr0="$WRRC $(wrlog $LINENO)"
+MK2="pf-record:bbb222:0123456789abcdef"
+wrwf "$WRC/projects/p1/s1/subagents/workflows/wf_two" "$MK2" 1
+wrwf "$WRC/projects/p2/s9/subagents/workflows/wf_three" "$MK2" 1
+wrrec "--lanes-b64=$WRB" "--lanes-sha256=$WRS" "--transcripts-marker=$MK2"
+_wr2="$WRRC $(wrlog $LINENO)"
+wrrec "--lanes-b64=$WRB" "--lanes-sha256=$WRS" "--transcripts-marker=pf-record"
+_wrf="$WRRC $(wrlog $LINENO)"
+[ "$_wr0" = "1 ('refused', 'transcripts-marker-unresolved', 'workflow')" ] && [ "$_wr2" = "1 ('refused', 'transcripts-marker-unresolved', 'workflow')" ] \
+  && [ "$_wrf" = "1 ('refused', 'transcripts-marker-unresolved', 'workflow')" ] \
+  && ok "WR-c: 표식이 든 wf 디렉터리가 0개·2개이거나 표식 꼴이 아니면 transcripts-marker-unresolved 로 거부" \
+  || ng "WR-c: 전사 디렉터리를 하나로 정하지 못했는데 다른 결과가 났다 (0개: $_wr0 · 2개: $_wr2 · 꼴: $_wrf)" "셋 다 rc=1 transcripts-marker-unresolved"
+# 오래된 전사(6시간 넘게 안 바뀐 것)는 찾지 않는다
+MK3="pf-record:ccc333:0123456789abcdef"
+wrwf "$WRC/projects/p1/s2/subagents/workflows/wf_old" "$MK3" 1
+touch -t 202001010000 "$WRC/projects/p1/s2/subagents/workflows/wf_old"/agent-*.jsonl
+wrrec "--lanes-b64=$WRB" "--lanes-sha256=$WRS" "--transcripts-marker=$MK3"
+[ "$WRRC" = 1 ] && [ "$(wrlog $LINENO)" = "('refused', 'transcripts-marker-unresolved', 'workflow')" ] \
+  && ok "WR-c: 최근 6시간 밖의 전사는 표식이 있어도 찾지 않는다" || ng "WR-c: 오래된 전사를 골랐다 (rc=$WRRC $(wrlog $LINENO))" "transcripts-marker-unresolved"
+# (4) lane 전사 없이 기록 에이전트·정리 에이전트 전사만 있으면 — 그 전사의 도구 실행·lane 이름이 든 명령은 lane 증거가 아니다
+MK4="pf-record:ddd444:0123456789abcdef"
+wrwf "$WRC/projects/p1/s3/subagents/workflows/wf_nolane" "$MK4" 0
+wrrec "--lanes-b64=$WRB" "--lanes-sha256=$WRS" "--transcripts-marker=$MK4"
+[ "$WRRC" = 1 ] && [ "$(wrlog $LINENO)" = "('refused', 'no-lane-evidence', 'workflow')" ] \
+  && ok "WR-d: lane 전사가 없으면 기록·정리 에이전트 전사가 있어도 no-lane-evidence 로 거부 (비-lane 전사는 증거가 되지 않는다)" \
+  || ng "WR-d: 비-lane 에이전트 전사가 lane 증거로 셌다 (rc=$WRRC $(wrlog $LINENO))" "no-lane-evidence"
+# (5) via 표시 — workflow 는 표식과 함께만, 위치 인자와 옵션을 함께 주면 거부
+rm -f "$T/wr.jsonl"; PF_RECORD_VIA=workflow PF_LOG="$T/wr.jsonl" "$R" record commit "$WRD/r" "$WRL" > "$T/wr.out" 2>&1; WRRC=$?
+[ "$WRRC" = 2 ] && [ "$(wrlog $LINENO)" = "('refused', 'via-unknown', 'workflow')" ] \
+  && ok "WR-e: 표식 없이 PF_RECORD_VIA=workflow 는 via-unknown 으로 거부 (workflow 표시는 표식으로만 붙는다)" \
+  || ng "WR-e: 표식 없는 workflow 표시가 받아졌다 (rc=$WRRC $(wrlog $LINENO))" "rc=2 via-unknown"
+wrrec "$WRL" "" "" "--lanes-b64=$WRB" "--lanes-sha256=$WRS" "--transcripts-marker=$MK1"
+_wrx="$WRRC $(wrlog $LINENO)"
+wrrec "" "" "$WRC/projects/p1/s1/subagents/workflows/wf_one" "--lanes-b64=$WRB" "--lanes-sha256=$WRS" "--transcripts-marker=$MK1"
+[ "$_wrx" = "2 ('refused', 'lanes-digest-mismatch', 'workflow')" ] && [ "$WRRC $(wrlog $LINENO)" = "2 ('refused', 'transcripts-marker-unresolved', 'workflow')" ] \
+  && ok "WR-e: lanes·전사를 위치 인자와 옵션으로 함께 주면 거부" || ng "WR-e: 두 입력을 함께 받았다 ($_wrx / $WRRC $(wrlog $LINENO))" "둘 다 rc=2"
+"$R" verify commit "$WRD/r" >/dev/null 2>&1 && _wrv=0 || _wrv=1
+# (위 거부들은 영수증을 지우지 않는다 — WR-a 의 기록이 남아 verify 를 통과한다)
+[ "$_wrv" = 0 ] && ok "WR-a: 워크플로 안 기록의 영수증이 verify 를 통과한다" || ng "WR-a: via workflow 영수증이 verify 에 막힌다" "verify rc=0"
+
+# (6) preflight.js — PASS 면 기록 에이전트를 부르고 FAIL·측정 전용·autoRecord=false 면 안 부른다.
+#     기록 에이전트 스텁은 실제 런타임처럼 전사(프롬프트)를 wf 디렉터리에 남기고 받은 명령을 **그대로 실행**한다 —
+#     워크플로 코드가 낸 base64·sha256·표식이 receipt.sh 의 검증과 같은 바이트인지 끝-대-끝으로 본다.
+cat > "$T/stub-wr.cjs" <<'ZJ'
+const fs = require('fs'), path = require('path'), { spawnSync } = require('child_process');
+const [pj, cj, mode, wfdir] = process.argv.slice(2);
+const src = fs.readFileSync(pj, 'utf8').replace(/^export const meta/m, 'const meta');
+const cls = JSON.parse(fs.readFileSync(cj, 'utf8'));
+const calls = []; let n = 0;
+const row = (ts, b) => JSON.stringify({ timestamp: ts, message: { content: [b] } });
+async function agent(prompt, opts) {
+    calls.push(opts.label); n++;
+    if (opts.label === 'snapshot')
+        return { outputs: [...prompt.matchAll(/role=(\w+): `bash \S+ create \S+ (\S+)`/g)]
+            .map(([, role, ref]) => ({ role, exitCode: 0, stderr: '', stdout: JSON.stringify({ path: `/tmp/pf-snap.Stub${role}`, tree: ref }) })) };
+    if (opts.label === 'snapshot-cleanup') return 'ok';
+    if (opts.label === 'record') {
+        fs.mkdirSync(wfdir, { recursive: true });
+        fs.writeFileSync(path.join(wfdir, `agent-rec${n}.jsonl`), JSON.stringify({ timestamp: '2026-11-24T10:00:30Z', message: { role: 'user', content: prompt } }) + '\n');
+        const m = prompt.match(/^- `(.*)`$/m);
+        if (!m) return { exitCode: 99, stdout: '', stderr: 'no command line' };
+        const p = spawnSync('bash', ['-c', m[1]], { encoding: 'utf8' });
+        return { exitCode: p.status, stdout: p.stdout, stderr: p.stderr };
+    }
+    // lane — 실제 런타임처럼 전사(도구 실행 + 구조화 출력)를 남긴다
+    fs.mkdirSync(wfdir, { recursive: true });
+    const verdict = mode === 'fail' ? 'FAIL' : 'PASS';
+    fs.writeFileSync(path.join(wfdir, `agent-lane${n}.jsonl`), [
+        row('2026-11-24T10:00:01Z', { type: 'tool_use', id: 'b' + n, name: 'Bash', input: { command: 'git diff --stat' } }),
+        row('2026-11-24T10:00:05Z', { type: 'tool_use', id: 'o' + n, name: 'StructuredOutput', input: { lane: opts.label, verdict, findings: [] } }),
+    ].join('\n') + '\n');
+    return { lane: opts.label, verdict, findings: [] };
+}
+const parallel = thunks => Promise.all(thunks.map(t => t().catch(() => null)));
+const lanes = Object.keys(cls.selected || {});
+const a = { repo: cls.repo, mode: cls.mode, classification: cls };
+if (mode === 'measure') a.laneModel = Object.fromEntries(lanes.map(l => [l, 'haiku']));
+if (mode === 'off') a.autoRecord = false;
+const fn = new (Object.getPrototypeOf(async function () {}).constructor)('args', 'agent', 'parallel', 'phase', 'log', 'workflow', src);
+fn(a, agent, parallel, () => {}, () => {}, () => { throw new Error('no workflow'); }).then(r => {
+    console.log(JSON.stringify({ calls, verdict: r.verdict, recorded: r.recorded, next: r.next, report: r.report }));
+}).catch(e => { console.error('RUN-FAILED', e && e.message); process.exit(1); });
+ZJ
+PJW="$HOME/.claude/skills/preflight/preflight.js"
+# 기록 시도마다 새 분류 — record 가 남긴 영수증과 상관없이 같은 인덱스로 다시 기록할 수 있다
+"$CL" "$WRD/r" commit > "$WRD/r.cls.json" 2>"$T/wr-cl.err"
+wrjs(){ rm -f "$T/wr.jsonl"; CLAUDE_CONFIG_DIR="$WRC" PF_LOG="$T/wr.jsonl" node "$T/stub-wr.cjs" "$PJW" "$WRD/r.cls.json" "$1" "$WRC/projects/p1/s4/subagents/workflows/wf_js_$1" > "$T/wr-js.out" 2>"$T/py.err"; }  # py-err-front
+wrjk(){ python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); r=eval(sys.argv[2]); print(" ".join(map(str, r)) if isinstance(r, tuple) else r)' "$T/wr-js.out" "$1" 2>>"$T/py.err"; _pytb "$2"; }
+rm -f "$(git -C "$WRD/r" rev-parse --absolute-git-dir)/claude-preflight.json"
+wrjs pass
+[ "$(wrjk '"record" in d["calls"], d["calls"][-1], d["recorded"]["status"]' $LINENO)" = "True record RECORDED" ] \
+  && [ "$(wrlog $LINENO)" = "('recorded', None, 'workflow')" ] && [ "$(wrrcpt wf_js_pass $LINENO)" = "workflow workflow True" ] \
+  && [ "$(wrjk '"record 를 다시 부르지 마라" in d["next"] and "기록: RECORDED" in d["report"]' $LINENO)" = True ] \
+  && ok "WR-f: PASS 면 기록 에이전트가 마지막에 돌고, 워크플로가 낸 base64·sha256·표식으로 receipt.sh 가 기록한다 (끝-대-끝, next 는 record 재호출 금지)" \
+  || ng "WR-f: PASS 인데 워크플로 안 기록이 되지 않았다 ($(head -c 400 "$T/wr-js.out") $(_diag "$T/py.err") log=$(wrlog $LINENO))" "record 호출 · RECORDED · via workflow"
+for _wm in fail measure off; do
+  wrjs "$_wm"
+  _wrr="$(wrjk '"record" in d["calls"], d["recorded"]["status"], "receipt.sh record 로 기록해라" in d["next"] if d["verdict"] == "PASS" else "-"' $LINENO)"
+  case "$_wm" in
+    fail) [ "$_wrr" = "False SKIPPED -" ] ;;
+    measure) [ "$_wrr" = "False SKIPPED -" ] ;;
+    off) [ "$_wrr" = "False SKIPPED True" ] ;;
+  esac && ok "WR-f: $_wm 면 기록 에이전트를 부르지 않는다 (recorded SKIPPED)" \
+       || ng "WR-f: $_wm 인데 기록 에이전트를 불렀거나 결과가 어긋난다 ($_wrr $(_diag "$T/py.err"))" "record 미호출 · SKIPPED"
+done
+# 기록이 거부되면 REFUSED 와 폴백 안내 — 분류 뒤 인덱스를 바꿔 record 가 index-changed 로 거부하게 한다
+printf 'later\n' >> "$WRD/r/a.txt"; git -C "$WRD/r" add a.txt
+wrjs pass
+[ "$(wrjk 'd["recorded"]["status"], "워크플로 안 기록이 되지 않았다" in d["next"] and "receipt.sh record 로 기록해라" in d["next"], "index-changed" in d["recorded"]["output"] or "인덱스" in d["recorded"]["output"]' $LINENO)" = "REFUSED True True" ] \
+  && ok "WR-f: 워크플로 안 record 가 거부되면 recorded=REFUSED·거부 출력을 담고 next 가 메인 기록으로 되돌린다" \
+  || ng "WR-f: 거부된 기록의 폴백 안내가 어긋난다 ($(head -c 400 "$T/wr-js.out"))" "REFUSED · 폴백 next"
+# 워크플로 쪽 base64 구현이 표준 base64 와 같은 바이트를 내는가 — 패딩 0·1·2 와 비ASCII
+{ sed -n '/BEGIN classification-load/,/END classification-load/p' "$PJW"; sed -n '/BEGIN auto-record/,/END auto-record/p' "$PJW"
+  cat <<'ZB'
+const out = [];
+for (const s of ['', 'a', 'ab', 'abc', 'abcd', '{"레인":"통과"}', '\u{1F600}x']) out.push([_b64Encode(_utf8Encode(s)), Buffer.from(s, 'utf8').toString('base64')]);
+const bad = out.filter(([a, b]) => a !== b);
+if (bad.length) { console.error(JSON.stringify(bad)); process.exit(1); }
+ZB
+} > "$T/wr-b64.cjs"
+node "$T/wr-b64.cjs" 2>"$T/py.err" && ok "WR-g: 워크플로의 base64 가 표준 base64 와 같다 (패딩 0·1·2, 다바이트 UTF-8)" \
+  || ng "WR-g: 워크플로 base64 가 표준과 다르다$(_diag "$T/py.err")" "Buffer.toString('base64') 와 같음"
+# END workflow-record
