@@ -5682,3 +5682,117 @@ _fpx=$(sed -n 1p "$T/fp-hook.cmd"); _fpr=$(sed -n 2p "$T/fp-hook.cmd")
 grep -qF 'CONTRACT: fast-path-requires-empty-selection' "$HOME/.claude/skills/preflight/receipt.sh" \
   && ok "FP: 단축 경로 기록 계약 주석이 있다" || ng "FP: 계약 주석이 없다" "fast-path-requires-empty-selection"
 # END fast-path
+
+# BEGIN preflight-run — 분류 한 번(DECISIONS.md 2026-11-24 「분류 한 번 — preflight-run.sh prepare」)
+echo "== 분류 한 번 (preflight-run.sh prepare) =="
+RNX="$HOME/.claude/skills/preflight/preflight-run.sh"
+RND="$T/pfrun"; rm -rf "$RND"; mkdir -p "$RND"
+# 실행 결과: 종료코드 RNRC, stdout $T/rn.out, stderr $T/rn.err, 관측 로그 $T/rn.jsonl(실행마다 비운다)
+rnrun(){ rm -f "$T/rn.jsonl"; PF_LOG="$T/rn.jsonl" "$RNX" "$@" > "$T/rn.out" 2>"$T/rn.err"; RNRC=$?; }
+# stdout 이 JSON 한 줄인지 보고 식을 평가한다 — 한 줄이 아니면 'not-one-line'
+rnj(){ python3 -c "import json,sys,os
+L=open(sys.argv[1]).read().splitlines()
+if len(L)!=1: print('not-one-line'); sys.exit()
+d=json.loads(L[0]); print($1)" "$T/rn.out" 2>"$T/py.err"; _pytb "$2"; }
+rnlog(){ python3 -c 'import json,sys,os
+L=[json.loads(l) for l in open(sys.argv[1]) if l.strip()] if os.path.exists(sys.argv[1]) else []
+r=[e for e in L if e.get("event")=="record"]
+print((r[-1].get("outcome"), r[-1].get("via")) if r else ("none", None))' "$T/rn.jsonl" 2>"$T/py.err"; _pytb "$1"; }
+
+# (a) 선택 0개 commit → 분류·기록이 한 호출, stdout 은 action=recorded JSON 한 줄
+ssrepo "$RND/a"; printf 'more\n' >> "$RND/a/a.txt"; git -C "$RND/a" add a.txt
+rnrun prepare "$RND/a" commit
+[ "$RNRC" = 0 ] && [ "$(rnj 'd["action"], d["via"], d["mode"], d["selected"], "git -C " in d["next"] and " commit" in d["next"]' $LINENO)" = "recorded fast-path commit [] True" ] \
+  && [ "$(rnlog $LINENO)" = "('recorded', 'fast-path')" ] \
+  && ok "RUN-a: 선택 0개 commit → action=recorded·via fast-path 한 줄, 로그에 via fast-path 기록" \
+  || ng "RUN-a: 선택 0개인데 단축 경로로 기록되지 않았다 (rc=$RNRC $(head -c 300 "$T/rn.out") $(tail -2 "$T/rn.err" | tr '\n' ' '))" "rc=0 recorded fast-path"
+[ "$(ssj "$(fprcpt "$RND/a")" '(e:=d["branches"]["main"]["commit"]).get("via"), sorted({(v["status"] if isinstance(v, dict) else v) for v in e["lanes"].values()})' $LINENO)" = "fast-path ['SKIPPED']" ] \
+  && ( repo="$RND/a"; hv "git -C $RND/a $G -m x" allow ) \
+  && ok "RUN-a: 영수증이 via fast-path·전부 SKIPPED 이고 훅이 그 커밋을 허용한다" \
+  || ng "RUN-a: 영수증 형태가 어긋나거나 훅이 막는다" "fast-path ['SKIPPED'] allow"
+
+# (b) 선택 있는 commit → action=workflow, 데이터 스크립트 키가 분류 파일 바이트와 맞고 기록은 없다
+ssrepo "$RND/b"; printf 'echo x\n' >> "$RND/b/skills/preflight/meta-test.sh"; git -C "$RND/b" add -A
+rnrun prepare "$RND/b" commit
+_rncf="$(git -C "$RND/b" rev-parse --absolute-git-dir)/claude-preflight.classify.json"
+_rnsha=$(shasum -a 256 "$_rncf" 2>/dev/null | cut -d' ' -f1)
+[ "$RNRC" = 0 ] && [ -n "$_rnsha" ] \
+  && [ "$(rnj 'd["action"], d["args"]["mode"], d["args"]["round"], "test-runner" in d["selected"], d["args"]["classificationSha256"], os.path.isfile(d["args"]["classificationScript"]), sorted(d["args"]) == ["classificationScript","classificationSha256","mode","repo","round"]' $LINENO)" \
+     = "workflow commit 1 True $_rnsha True True" ] \
+  && [ -z "$(fprcpt "$RND/b")" ] && [ "$(rnlog $LINENO)" = "('none', None)" ] \
+  && ok "RUN-b: 선택 있는 commit → action=workflow, classificationSha256 = 분류 파일 sha256, 데이터 스크립트 존재, 기록 없음" \
+  || ng "RUN-b: workflow 인자가 어긋난다 (rc=$RNRC sha=$_rnsha $(head -c 400 "$T/rn.out") $(tail -2 "$T/rn.err" | tr '\n' ' '))" "workflow commit 1 True <sha> True True"
+_rnsp=$(rnj 'd["scriptPath"]' $LINENO)
+[ -n "$_rnsp" ] && [ "$_rnsp" -ef "$HOME/.claude/skills/preflight/preflight.js" ] && [ ! -L "$_rnsp" ] \
+  && ok "RUN-b: scriptPath 는 심링크를 푼 preflight.js 다" || ng "RUN-b: scriptPath 가 preflight.js 원본이 아니다 [$_rnsp]" "realpath preflight.js"
+# PF_CLS_DIR 를 주면 데이터 스크립트와 preflight.js 사본이 그 폴더에 생긴다
+mkdir -p "$RND/clsdir"
+PF_CLS_DIR="$RND/clsdir" rnrun prepare "$RND/b" commit
+_rnsp=$(rnj 'd["scriptPath"]' $LINENO); _rncs=$(rnj 'd["args"]["classificationScript"]' $LINENO)
+[ "$RNRC" = 0 ] && [ "$_rnsp" -ef "$RND/clsdir/preflight.js" ] && cmp -s "$_rnsp" "$HOME/.claude/skills/preflight/preflight.js" \
+  && [ "$_rncs" -ef "$RND/clsdir/claude-preflight.classify.wf.js" ] \
+  && ok "RUN-b: PF_CLS_DIR 면 scriptPath·classificationScript 가 그 폴더(preflight.js 는 같은 바이트의 사본)" \
+  || ng "RUN-b: PF_CLS_DIR 가 반영되지 않았다 (rc=$RNRC [$_rnsp] [$_rncs])" "$RND/clsdir/preflight.js"
+
+# (c) classify.sh 실패 → stdout 비고 그 종료코드 — 모르는 플래그(2), 카테고리 선언 결손(3)
+ssrepo "$RND/c"; printf 'more\n' >> "$RND/c/a.txt"; git -C "$RND/c" add a.txt
+rnrun prepare "$RND/c" commit --reveiw; _rnc1="$RNRC $(wc -c < "$T/rn.out" | tr -d ' ')"
+grep -qF "알 수 없는 플래그: '--reveiw'" "$T/rn.err" || _rnc1="$_rnc1 사유없음"
+PF_OVERLAY_DIR="$FPO" rnrun prepare "$RND/c" commit; _rnc2="$RNRC $(wc -c < "$T/rn.out" | tr -d ' ')"
+[ "$_rnc1" = "2 0" ] && [ "$_rnc2" = "3 0" ] && [ -z "$(fprcpt "$RND/c")" ] \
+  && ok "RUN-c: classify.sh 실패(모르는 플래그 2·카테고리 결손 3) → stdout 비고 같은 종료코드, 기록 없음" \
+  || ng "RUN-c: 분류 실패가 전달되지 않았다 [$_rnc1] [$_rnc2]" "[2 0] [3 0]"
+
+# (d) pr 모드 --body-file(상대경로) → args.prBodyFile 은 절대경로, 분류에도 같은 본문이 들어간다
+git init -q --bare -b main "$RND/origin.git"
+ixrepo "$RND/d"; git -C "$RND/d" remote add origin "$RND/origin.git"
+printf 'a\n' > "$RND/d/a.txt"; git -C "$RND/d" add -A; git -C "$RND/d" "$G" -qm init; git -C "$RND/d" push -q origin main 2>/dev/null
+git -C "$RND/d" remote set-head origin main 2>/dev/null; git -C "$RND/d" checkout -q -b feat/run
+printf 'b\n' > "$RND/d/b.txt"; git -C "$RND/d" add -A; git -C "$RND/d" "$G" -qm c1
+mkdir -p "$RND/drafts"; printf '본문\n' > "$RND/drafts/body.md"
+( cd "$RND/drafts" && VAULT_EXEMPT="pfrun/origin" rnrun prepare "$RND/d" pr --body-file=body.md; echo "$RNRC" > "$T/rn.rc" )
+_rnpb=$(rnj 'd["action"], d["args"]["mode"], d["args"]["prBodyFile"]' $LINENO)
+[ "$(cat "$T/rn.rc")" = 0 ] && [ "${_rnpb% *}" = "workflow pr" ] && case "${_rnpb##* }" in /*) [ "${_rnpb##* }" -ef "$RND/drafts/body.md" ];; *) false;; esac \
+  && ok "RUN-d: pr 모드 --body-file=<상대경로> → action=workflow, args.prBodyFile 은 같은 파일의 절대경로" \
+  || ng "RUN-d: prBodyFile 이 절대경로가 아니거나 없다 (rc=$(cat "$T/rn.rc") [$_rnpb] $(tail -2 "$T/rn.err" | tr '\n' ' '))" "workflow pr /…/drafts/body.md"
+
+# (e) --round·--prior 는 prepare 가 쓰고 classify.sh 에 넘기지 않는다(넘기면 모르는 플래그로 exit 2)
+printf '["lane:x#1","lane:y#2"]\n' > "$RND/prior.json"
+rnrun prepare "$RND/b" commit --round=2 "--prior=$RND/prior.json"
+[ "$RNRC" = 0 ] && [ "$(rnj 'd["args"]["round"], d["args"]["priorFindings"]' $LINENO)" = "2 ['lane:x#1', 'lane:y#2']" ] \
+  && ! grep -qF -- '--round' "$T/rn.err" \
+  && ok "RUN-e: --round=2 --prior=<파일> → args.round 2·priorFindings 그 배열, classify.sh 는 두 플래그를 받지 않는다" \
+  || ng "RUN-e: round·priorFindings 가 반영되지 않았다 (rc=$RNRC $(head -c 300 "$T/rn.out") $(tail -2 "$T/rn.err" | tr '\n' ' '))" "2 ['lane:x#1', 'lane:y#2']"
+# 형식이 틀린 --prior·--round 는 분류를 돌리기 전에 거부한다(분류 파일이 새로 쓰이지 않는다)
+_rnm0=$(shasum -a 256 "$_rncf" | cut -d' ' -f1); _rne=""
+printf '{"x":1}\n' > "$RND/prior-bad.json"
+for _a in "--prior=$RND/prior-bad.json" "--round=0" "--round=x"; do
+  rnrun prepare "$RND/b" commit "$_a"; [ "$RNRC" = 2 ] && [ ! -s "$T/rn.out" ] || _rne="$_rne [$_a rc=$RNRC]"
+done
+[ -z "$_rne" ] && [ "$(shasum -a 256 "$_rncf" | cut -d' ' -f1)" = "$_rnm0" ] \
+  && ok "RUN-e: 형식이 틀린 --prior·--round 는 분류 없이 exit 2" || ng "RUN-e: 틀린 --prior·--round 를 받았다$_rne" "전부 rc=2, 분류 파일 그대로"
+
+# (f) 단축 경로 대상이 아니면 선택이 0개여도 기록하지 않는다 — preflight-fast.sh 와 같은 조건(commit 에 --body-file)
+printf '본문\n' > "$RND/body-c.md"
+rnrun prepare "$RND/c" commit "--body-file=$RND/body-c.md"
+[ "$RNRC" = 0 ] && [ "$(rnj 'd["action"], d["selected"]' $LINENO)" = "workflow []" ] && [ -z "$(fprcpt "$RND/c")" ] \
+  && ok "RUN-f: 선택 0개라도 commit --body-file 은 단축 경로 대상이 아니다 → action=workflow, 기록 없음" \
+  || ng "RUN-f: 단축 경로 대상이 아닌 커밋이 기록됐다 (rc=$RNRC $(head -c 200 "$T/rn.out"))" "workflow [], 영수증 없음"
+
+# (g) SKILL.md gate-args 블록은 이 스크립트를 부른다 — 블록을 떼어 실행하면 같은 두 키가 나온다
+python3 - "$HOME/.claude/skills/preflight/SKILL.md" > "$T/rn-block.sh" 2>"$T/py.err" <<'RNB'
+import re, sys
+t = open(sys.argv[1], encoding='utf-8').read()
+m = re.search(r'<!-- BEGIN gate-args -->\s*```bash\n(.*?)```\s*<!-- END gate-args -->', t, re.S)
+print(m.group(1) if m else '')
+RNB
+P="$HOME/.claude/skills/preflight" bash -c '. "$1"; pf_gate_args "$2" commit' _ "$T/rn-block.sh" "$RND/b" > "$T/rn-ga.out" 2>"$T/rn-ga.err"
+[ "$(python3 -c 'import json,sys,os; d=json.loads(open(sys.argv[1]).read()); print(sorted(d), d["classificationSha256"] == sys.argv[2] or "sha", os.path.isfile(d["classificationScript"]))' "$T/rn-ga.out" "$(shasum -a 256 "$_rncf" | cut -d' ' -f1)" 2>"$T/py.err")" \
+   = "['classificationScript', 'classificationSha256'] True True" ] \
+  && grep -qF 'preflight-run.sh" gate-args' "$T/rn-block.sh" \
+  && ok "RUN-g: SKILL.md gate-args 블록이 preflight-run.sh gate-args 를 부르고 두 키를 낸다" \
+  || ng "RUN-g: gate-args 블록 출력이 어긋난다 ($(head -c 200 "$T/rn-ga.out") $(tail -1 "$T/rn-ga.err"))" "두 키, sha 일치"
+P="$HOME/.claude/skills/preflight" bash -c '. "$1"; pf_gate_args "$2" commit --reveiw' _ "$T/rn-block.sh" "$RND/b" > "$T/rn-ga.out" 2>"$T/rn-ga.err"; _rnga=$?
+[ "$_rnga" = 2 ] && [ ! -s "$T/rn-ga.out" ] \
+  && ok "RUN-g: gate-args 블록은 classify.sh 실패 코드를 그대로 돌려주고 출력이 없다" || ng "RUN-g: 블록이 분류 실패를 전달하지 않는다 (rc=$_rnga)" "rc=2, 출력 없음"
+# END preflight-run

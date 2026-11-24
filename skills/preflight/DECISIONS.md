@@ -367,3 +367,25 @@ a=70 a_sessions=13 b=62 main=202 home=45 norepo=78 path_outside_repo=9
   LLM 이 Write 로 옮긴다 — 가공하거나 빼먹을 수 있어, run 은 파일이 JSON 으로 읽히고 `lanes` 가 있는지만 확인하고 내용의 충실성은
   보장하지 않는다. `--agents` 에는 frontmatter 의 `effort` 등 다른 키가 실리지 않는다.
 - **어디**: `eval/flip.sh`(`run`, score 의 `injected`), `SKILL.md`(참고 절), `meta-test/engine.sh`(flip run — `CLAUDE_BIN` 스텁, 모델 호출 없음).
+
+## 2026-11-24
+
+### 분류 한 번 — `preflight-run.sh prepare`
+
+- **무엇**: `preflight-run.sh prepare <repo> commit|pr|all [--round=N] [--prior=<파일>] [classify.sh 플래그…]`(신규)가 분류를 한 번
+  돌리고 다음 행동을 JSON 한 줄로 낸다. 단축 경로 대상(commit, 플래그는 `--msg-file` 뿐)이고 선택 lane 이 0개면 `via: fast-path`
+  기록까지 하고 `action=recorded`, 아니면 데이터 스크립트를 쓰고 `action=workflow` 와 Workflow 에 그대로 넣을 `scriptPath`·`args`
+  (`repo`·`mode`·`round`·`classificationScript`·`classificationSha256`, 있으면 `prBodyFile`·`priorFindings`)를 낸다. `--round`·`--prior`
+  는 prepare 가 쓰고 `classify.sh` 에 넘기지 않는다. 분류 실패면 stdout 이 비고 그 종료코드로 끝난다.
+- **한 벌로 둔 것**: SKILL.md gate-args 블록의 `pf_gate_args` 는 이제 `preflight-run.sh gate-args` 를 부르는 한 줄이다 — 분류 실패 전달·
+  `classify-sha256` 필수·데이터 스크립트 쓰기가 스크립트 한 곳에 있다. 블록을 `lib.sh` 로 옮기지 않은 이유: 블록은 메인 세션의 셸에서
+  정의되는데 그 셸이 bash 라는 보장이 없고(`lib.sh` 는 `BASH_SOURCE` 에 기댄다), 명령 호출은 셸에 무관하다. 단축 경로의 대상 조건·판정·
+  기록은 `lib.sh` 의 `pf_fast_eligible`·`pf_fast_plan`·`pf_fast_record` 로 옮겨 `preflight-fast.sh` 와 prepare 가 같이 쓴다.
+- **왜**: 메인 세션 게이트 턴을 단계별로 나눠 보면 `classify.sh` 를 단독으로 돌린 턴과 분류·인자를 다시 만든 턴이 각각 워크플로
+  실행 수에 가까웠다(관찰 — 집계 스크립트가 이 레포 밖에 있어 수치는 적지 않는다). 분류 단독 실행 뒤 같은 인자로
+  `pf_gate_args` 를 다시 부르면 분류가 두 번 돌고 턴도 두 번 쓴다. prepare 는 그 둘을 한 호출로 합친다.
+- **한계**: 턴 수 감소는 아직 재지 않았다 — 같은 집계를 배포 뒤 다시 돌려야 안다. `scriptPath` 의 원본 경로(심링크를 푼
+  `preflight.js`)가 세션이 읽을 수 없는 자리면 Workflow 가 거부한다 — `PF_CLS_DIR` 를 주면 그 폴더에 사본을 둔다. 사본은 덮어쓰기라
+  같은 폴더를 두 세션이 쓰면 마지막 것이 남는다(내용은 같은 설치본이면 같다). 커밋 훅의 deny 안내는 아직 `preflight-fast.sh` 를 가리킨다.
+- **어디**: `preflight-run.sh`(신규), `lib.sh`(`pf_fast_*`), `preflight-fast.sh`(공용 함수 사용), `SKILL.md`(맨 앞·§ 1·§ 2·gate-args 블록),
+  `meta-test/engine.sh`(RUN-a~g). `ENGINE_VERSION` 2.4 → **2.5**(호환되는 추가 — 새 진입점, 프로필 계약은 그대로).

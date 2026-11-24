@@ -13,9 +13,15 @@ description: 커밋·PR 전 품질 게이트. 결정론적 분류기가 lane 을
 **무엇을 검사할지 네가 고르지 않는다.** lane 선택은 `classify.sh` 가 결정한다.
 같은 변경에 매번 같은 lane 이 도는 것이 이 구조의 전제다.
 
-**단축 경로(커밋만).** 스테이징 뒤 `$P/preflight-fast.sh <repo> commit [--msg-file=<초안>]` 한 번 — 선택된 lane 이 0개면
-분류부터 기록(`via: fast-path`)까지 끝낸다. 선택이 하나라도 있으면 기록하지 않고 exit 10 이니 아래 정식 절차를 돌린다.
-PR 게이트·`--qa`·`--review` 는 받지 않고, 커밋 자체는 하지 않는다(별도 호출). 근거는 DECISIONS.md 「빈 게이트 단축 경로」.
+**기본 경로 — 분류 한 번.** 스테이징 뒤 `$P/preflight-run.sh prepare <repo> commit|pr|all [--round=N] [--prior=<findingIds 파일>] [classify.sh 플래그…]`
+한 번 — 분류하고 다음 행동을 JSON 한 줄로 낸다. `action=recorded` 면 선택 lane 이 0개인 커밋이라 단축 경로 기록(`via: fast-path`)까지
+끝났다 — 출력의 `next` 대로 커밋한다(별도 호출). `action=workflow` 면 출력의 `scriptPath`·`args` 를 **그대로** Workflow 에 넣고(§ 2),
+결과를 기록한다(§ 4). 분류가 실패하면 stdout 이 비고 classify.sh 의 종료코드로 끝난다. 단축 경로 조건은 `preflight-fast.sh` 와
+같다(commit 이고 `--msg-file` 말고 플래그가 없을 때). worktree 세션이면 `PF_CLS_DIR=<scratchpad>` 를 준다 — `preflight.js` 사본도 거기 생긴다.
+근거는 DECISIONS.md 「분류 한 번 — preflight-run.sh prepare」.
+
+**단축 경로만(커밋).** `$P/preflight-fast.sh <repo> commit [--msg-file=<초안>]` 는 같은 판정을 하고, 선택이 있으면 기록하지 않고
+exit 10 으로 끝난다. 근거는 DECISIONS.md 「빈 게이트 단축 경로」.
 
 ## 0. 순서 — QA 는 배포된 것을 검사한다
 
@@ -95,8 +101,10 @@ git merge-base --is-ancestor origin/<branch> origin/<base> && git push origin --
 ```bash
 P=<이 스킬의 Base directory>   # 로컬 설치는 ~/.claude/skills/preflight, 플러그인이면 <plugin>/skills/preflight
 git -C <repo> add <커밋할 파일들>
-$P/classify.sh <repo> commit|pr|all [--qa] [--review] [--body-file=<PR 본문 초안>] [--msg-file=<커밋 메시지 초안>]
+$P/preflight-run.sh prepare <repo> commit|pr|all [--qa] [--review] [--body-file=<PR 본문 초안>] [--msg-file=<커밋 메시지 초안>]
 ```
+
+플래그는 `classify.sh` 의 것을 그대로 넘긴다. 분류를 따로 돌린 뒤 다시 돌리지 마라 — prepare 가 분류 결과로 다음 행동(기록 또는 Workflow 인자)까지 낸다.
 
 - `selected` — 돌릴 lane 과 그 lane 이 볼 파일
 - `notSelected` — **안 돌리는 lane 과 사유** (기록의 일부다)
@@ -188,6 +196,9 @@ $P/profile.sh init <repo> [--category <이름>] [--adjustments <파일>]   # →
 
 이 스킬은 Workflow 호출을 지시한다 — 사용자 opt-in 으로 간주한다.
 
+**`preflight-run.sh prepare` 의 출력(`action=workflow`)이 이 호출의 인자다** — `Workflow({ scriptPath: <출력의 scriptPath>, args: <출력의 args> })`.
+`round`·`priorFindings`·`prBodyFile` 은 prepare 의 `--round=N`·`--prior=<파일>`·`--body-file=<초안>` 에서 채워진다. 아래는 그 인자의 뜻이다.
+
 ```
 Workflow({ scriptPath: "$P/preflight.js" 의 절대경로 (심링크면 원본 경로; 읽을 수 있는 파일이어야 한다),
            args: { repo, mode, round, classification: <1번의 JSON 그대로>,
@@ -222,18 +233,8 @@ classify.sh 가 0 이 아닌 코드로 끝나면 **args 를 만들지 않고 멈
 ```bash
 # usage: [PF_CLS_DIR=<폴더>] pf_gate_args <repo> <classify.sh 인자…>
 #   → stdout: Workflow args 에 합칠 {classificationScript, classificationSha256}
-pf_gate_args() {
-    local repo="$1" err rc sha gd dir; shift
-    gd=$(git -C "$repo" rev-parse --absolute-git-dir) || return 1
-    dir="${PF_CLS_DIR:-$gd}"
-    err=$(mktemp) || return 2
-    "$P/classify.sh" "$repo" "$@" >/dev/null 2>"$err"; rc=$?
-    sha=$(sed -n 's/^classify-sha256: //p' "$err" | tail -1)
-    grep -v '^classify-sha256: ' "$err" >&2; rm -f "$err"
-    [ "$rc" = 0 ] || { echo "classify.sh 실패(rc=$rc) — args 를 만들지 않는다" >&2; return "$rc"; }
-    [ -n "$sha" ] || { echo "classify.sh 가 classify-sha256 을 내지 않았다(분류 파일 쓰기 실패) — args 를 만들지 않는다" >&2; return 1; }
-    python3 "$P/cls-data-script.py" "$repo" "$gd/claude-preflight.classify.json" "$sha" "$dir"
-}
+# 절차(분류 실패면 같은 rc·출력 없음, classify-sha256 필수, 데이터 스크립트 쓰기)는 preflight-run.sh 한 벌이다 — prepare 와 같다.
+pf_gate_args() { "$P/preflight-run.sh" gate-args "$@"; }
 ```
 <!-- END gate-args -->
 

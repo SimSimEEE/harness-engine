@@ -12,7 +12,7 @@
 #     게이트 결과 기록 (스테이징 후). transcripts-dir 을 넘기면 전사 기반 검사 셋이 켜진다
 #     (no-lane-evidence · concealed-promotion · sequence-violated). 넘겼는데 못 읽으면 거부한다.
 #     classify 를 생략하면 <gitdir>/claude-preflight.classify.json 을 자동으로 읽는다.
-#     PF_RECORD_VIA=fast-path 는 preflight-fast.sh 의 단축 경로 기록 표시다 — 필수 lane 이 빈 분류만 받는다.
+#     PF_RECORD_VIA=fast-path 는 lib.sh pf_fast_record(preflight-fast.sh·preflight-run.sh prepare)의 단축 경로 기록 표시다 — 필수 lane 이 빈 분류만 받는다.
 #   receipt.sh verify commit|pr <dir>                검증 (exit 0 통과, 1 차단)
 #   receipt.sh report pr <dir> [branch]              머지 보고 — 계획 claim 닫힘 · QA 상태 (판정하지 않는다)
 #
@@ -115,7 +115,7 @@ lanes = _parse('LANES')
 classify = _parse('CLASSIFY')
 
 # CONTRACT: fast-path-requires-empty-selection
-# 기록 경로 표시. 비면 정식 절차(워크플로 결과를 넘기는 기록)이고, `fast-path` 는 preflight-fast.sh 가 워크플로 없이
+# 기록 경로 표시. 비면 정식 절차(워크플로 결과를 넘기는 기록)이고, `fast-path` 는 lib.sh pf_fast_record(preflight-fast.sh·preflight-run.sh prepare)가 워크플로 없이
 # 남긴 기록이다. 표시는 영수증·관측 로그에 `via` 로 남는다. 표시만으로 검사가 줄지 않는다 — 아래 절차 검사를 그대로
 # 지나고, 분류의 필수 lane 이 비어 있지 않거나 SKIPPED·NOT_APPLICABLE 밖의 결과를 보고하면 거부한다(fast-path-not-empty).
 VIA = os.environ.get('VIA') or ''
@@ -989,7 +989,7 @@ data['branches'].setdefault(os.environ['BRANCH'], {})[os.environ['KIND']] = {
     'ts': int(os.environ['TS']),
     # 이 기록을 만든 엔진 (lib.sh pf_engine_version). 못 읽으면 null — 판정에 쓰지 않는다.
     'engineVersion': os.environ.get('ENGINE_VER') or None,
-    # 기록 경로 — 단축 경로(preflight-fast.sh)면 'fast-path', 정식 절차면 키가 없다.
+    # 기록 경로 — 단축 경로(lib.sh pf_fast_record)면 'fast-path', 정식 절차면 키가 없다.
     **({'via': VIA} if VIA else {}),
     'lanes': lanes,
     'classification': classify,   # 어떤 근거로 이 lane 들을 골랐는가
