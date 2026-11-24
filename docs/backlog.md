@@ -26,14 +26,6 @@ blocking 없이 끝났다. 게이트가 요구한 것이 아니라 참고를 쫓
 
 지금 고치지 않는 이유: 표본 레포가 하나라 대안 정의를 고를 근거가 없다.
 
-### Python 레포의 테스트가 돌지 않는다
-`.py` 는 `code-reviewer` 대상(`classify.sh` `CODE_EXT`)이지만 `test-runner` 는 eslint/tsc/jest 만 돌아 Python 테스트(pytest 등)를
-실행하지 않는다 — `.py` 변경에서 `test-runner` 는 `no-testable-file-change` 로 남는다.
-
-→ 닫는 방법: 카테고리 규칙(`suites`)으로 레포의 테스트 명령을 분류기가 확정하거나, `test-runner` 에 언어별 명령을 둔다.
-
-**먼저 셀 것**: 프로필이 있는 Python 레포 수와 그 레포들의 테스트 러너 종류.
-
 ### 엔진 단독 스위트에 조직 카테고리 의존 단언이 없다
 엔진을 오버레이 레포에서 떼어 낼 때(2026-11-17), vault 등록 조회·QA 안내·관례 범위처럼 **카테고리 규칙 훅을
 거쳐야 드러나는** 엔진 동작의 단언은 그 규칙을 가진 오버레이 카테고리 스위트로 옮겼다. 오버레이와 함께 돌리면
@@ -139,6 +131,16 @@ REPO 는 스크립트 디렉터리 기준이라 그 설치 형태에서 체크�
 ---
 
 ## 닫힘
+
+### Python 레포의 테스트가 돌지 않는다 — 닫힘 (2026-11-24)
+`.py` 는 `code-reviewer` 대상(`classify.sh` `CODE_EXT`)이지만 `test-runner` 는 eslint/tsc/jest 만 돌아 Python 테스트(pytest 등)를
+실행하지 않는다 — `.py` 변경에서 `test-runner` 는 `no-testable-file-change` 로 남는다.
+
+→ 닫는 방법: 카테고리 규칙(`suites`)으로 레포의 테스트 명령을 분류기가 확정하거나, `test-runner` 에 언어별 명령을 둔다.
+
+**먼저 셀 것**: 프로필이 있는 Python 레포 수와 그 레포들의 테스트 러너 종류.
+
+닫힘: 분류기가 카테고리와 무관하게 `.py` 로직 변경 + 스냅숏의 `test_*.py`·`*_test.py` 에서 `test-runner` 를 고르고 Python 회귀 명령(pytest 신호(설정·conftest·함수형 테스트)가 있으면 `python3 -m pytest -q <dirs>`, 없으면 테스트 파일 디렉터리마다 `python3 -B -m unittest discover -s <dir> [-t <top>] -p <패턴>`)을 확정한다 — `skills/preflight/DECISIONS.md` 2026-11-24 「Python 테스트를 분류기가 확정한다」, 회귀 `meta-test/engine.sh` 「Python 테스트」 py(a)~(x). "먼저 셀 것" 은 관측 로그로 셌다(관찰): `.py` 를 바꾼 라운드가 있는 레포 중 테스트가 있는 레포 둘, 둘 다 `unittest`.
 
 ### record 단계가 카테고리의 `SECRET_SCAN` 을 다시 계산하지 않는다 — 닫힘 (2026-11-23)
 위치: `skills/preflight/receipt.sh` record 의 재스캔(CONTRACT `secret-scan-recheck-at-record`) · `skills/preflight/classify.sh`

@@ -480,3 +480,56 @@ a=70 a_sessions=13 b=62 main=202 home=45 norepo=78 path_outside_repo=9
   `secret-scan-recheck-at-record` (c) 원인 코드), `SKILL.md`(관측 로그 사유·라우팅 표), `meta-test/engine.sh`(CR-a~e, SS-o 원인별 문구),
   `docs/backlog.md`(닫힘 항목에 후속 한 줄). `ENGINE_VERSION` 은 그대로다 — 2026-11-23 절과 같은 종류(위조 경로를 닫는
   호환 강화, 프로필 계약 그대로)라 그 절의 관례를 따랐다.
+
+### Python 테스트를 분류기가 확정한다
+
+- **왜**: `.py` 는 `code-reviewer` 대상(`CODE_EXT`)인데 `test-runner` 는 eslint·tsc·jest 만 돌아, `.py` 변경에서 `test-runner` 가
+  `no-testable-file-change` 로 빠졌다 — Python 레포의 테스트는 어느 게이트에서도 돌지 않았다(백로그 「Python 레포의 테스트가 돌지 않는다」).
+  관찰: 관측 로그상 `.py` 를 바꾼 게이트 라운드가 있는 레포 중 테스트가 있는 레포는 둘이고 둘 다 표준 `unittest`(TestCase)다 —
+  하나는 테스트 파일이 패키지가 아닌 폴더에(`tools/test_*.py`), 하나는 `tests/` 패키지(`__init__.py`)에 있다. 테스트가 없는 Python 레포도 있다.
+  그 머신에는 pytest 가 없다. 집계 스크립트가 이 레포 밖에 있어 수치는 적지 않는다.
+- **무엇**: 카테고리와 무관한 엔진 공통 규칙(`classify.sh`, 카테고리 `suites` 바로 뒤). 커밋·PR 대상에 `.py` 로직 변경(기존
+  `logic_changed` 휴리스틱 — 주석·공백만이면 제외)이 있고 스냅숏에 `test_*.py`·`*_test.py` 가 있으면 `test-runner` 를 고르고 회귀
+  명령을 확정한다. 테스트 파일은 **그 파일이 있는 디렉터리**별로 묶는다. 러너는 `_py_runner` 한 함수가 스냅숏 내용으로 정한다 —
+  pytest 신호가 하나라도 있으면 pytest: 루트의 pytest 설정(`pytest.ini`, `pyproject.toml` 의 `[tool.pytest…`, `setup.cfg`·`tox.ini` 의
+  `[tool:pytest]`·`[pytest]`, 근거 `config`), 스냅숏 어디든 `conftest.py`(`conftest`), 함수형·클래스형 테스트 파일(`function-style`), 파싱 실패 파일
+  (`parse-error`). 파일 형은 `_py_test_style` 하나가 **구문 트리(`ast.parse`)** 로 정한다 — 클래스의 베이스는 같은 모듈의 클래스 정의로 따라가
+  해소한다(순환 방지) — 끝 이름(Name·Attribute 의 마지막 이름)이 `…TestCase`(`TestCase`·`unittest.TestCase`·`IsolatedAsyncioTestCase` …)에
+  닿으면 TestCase 클래스, 베이스가 없거나 `object` 이거나 같은 모듈 안에서 `…TestCase` 없이 끝나면 일반 클래스, 다른 모듈에서 import 한
+  베이스처럼 해소할 수 없으면 그 클래스는 근거로 쓰지 않는다(unknown). 모듈 수준 `def test*`·`async def test*` 나 이름이 `Test` 로 시작하는
+  일반 클래스(pytest 클래스형)가 있으면 function, TestCase 클래스만 있으면 unittest(`class Base(unittest.TestCase)` + `class TestFoo(Base)`
+  포함), 판정할 테스트가 없으면(헬퍼만·해소 불가 클래스만) 판정에서 뺀다, 파싱 실패는 pytest 쪽(0개 실행으로 통과하는 것보다 실패가 낫다).
+  해소 불가 베이스만 있는 파일은 다른 신호가 없으면 unittest 로 남는다 — 그 베이스가 TestCase 면 discover 가 실제로 찾아 돈다(py(w)),
+  TestCase 가 아니면 0개 실행으로 3.12+ 는 FAIL(exit 5), 그 전 버전은 통과한다(한계). import 문은 근거가 아니고 주석·문자열은 트리에 없다.
+  모든 테스트 파일이 unittest 형이고 신호가 없을 때만 unittest 다. unittest discover 는 함수형 테스트를 0개로 센다(3.12+ exit 5 를 test-runner 가 환경
+  문제로 오진하기 쉽고, 3.12 미만은 0개로 통과) — 그래서 신호 하나로 pytest 로 기운다. pytest 면 `cd <스냅숏> && python3 -m pytest -q <dirs>`
+  한 개, unittest 면 디렉터리마다 `cd <스냅숏> && python3 -B -m unittest discover -s <dir> [-t <top>] -p 'test_*.py'`(`*_test.py` 만 있으면
+  `-p '*_test.py'`). 디렉터리가 패키지(`__init__.py`)면 `__init__.py` 가 이어지는 가장 위 패키지의 부모를 `-t` 로 준다(루트면 `-t .`) —
+  import 이름이 패키지 경로가 된다. 다른 디렉터리 a 의 `discover -s a` 가 이미 수집하는 디렉터리(a→d 사이가 모두 패키지, 같은 패턴)는
+  명령을 뺀다 — 루트와 패키지 `tests/` 가 함께면 명령 하나다. pytest 인자는 조상이 이미 인자인 디렉터리를 뺀다(비패키지 하위도 수집한다). 이름은 `python-tests`·`python-tests:<dir>`,
+  `laneMeta.test-runner.pythonTests` 에 사유(`python-tests — …`)·러너·근거(`why`: `config`·`conftest`·`function-style`·`parse-error`)·설정 파일·함수형·파싱 실패 파일(최대 5개)·디렉터리가 남는다. 테스트가 없으면 아무것도 하지 않는다 —
+  `test-runner` 는 지금 사유 그대로다.
+- **카테고리 suites 와의 관계**: 대체하지 않고 **더한다**(`suites` 목록에 extend). 엔진 레포(`shell-tool`)는 지금 추적 파일에
+  `test_*.py`·`*_test.py` 가 없어(`git ls-files` 0건) 회귀 명령 집합이 그대로다. 그런 파일이 생기면 `meta-test` 와 함께 돈다 — 둘 다
+  커밋될 내용을 검사하는 명령이라 겹쳐도 덜 도는 쪽이 아니다.
+- **기록 단계**: `suite-not-run` 은 그대로 적용된다 — `marker` 가 명령 문자열 자체(`python3 -B -m unittest discover …`)라서
+  `receipt.sh` 의 `_ran_script` 가 전사에서 그 문자열이 명령 자리에 왔는지 센다(`cd <경로> && ` 뒤, `/usr/bin/` 같은 경로 접두, 뒤의
+  `2>&1 | tail` 은 허용). 패턴·플래그를 바꿔 돌리면 확정된 명령의 실행이 아니다. `receipt.sh` 는 고치지 않았다.
+- **test-runner**: 회귀 명령을 글자 그대로 돌리고 종료 코드·마지막 요약 줄을 보고한다. 명령을 돌리지 못하면(예: `No module named pytest`)
+  다른 회귀 명령과 같이 FAIL 이다 — reason 에 원인이 환경임과 해결(pytest 설치)을 적는다. `Ran 0 tests`·`NO TESTS RAN`·`no tests ran` 은
+  테스트를 찾지 못한 것으로 FAIL, reason 에 0개 실행과 분류기 판정 근거를 적는다 — 환경 문제로 쓰지 않는다(`agents/test-runner.md` 0.8).
+- **해소 — 최상위로 묶던 첫 판**: 처음에는 최상위 디렉터리별로 묶었는데, unittest discover 는 `-s` 아래를 패키지로만 내려가
+  `skills/preflight/test_m.py` 같은 비패키지 중첩 테스트를 `-s skills` 로 0개 실행했다(Python 3.12+ 는 exit 5 `NO TESTS RAN` 으로 매
+  게이트 FAIL, 그 전 버전은 0개로 통과 — 커밋 게이트 리뷰가 재현). 묶는 단위를 테스트 파일의 디렉터리로 바꿔 해소했다. 회귀 단언은
+  확정 명령을 픽스처에서 실제로 돌려 `Ran N tests` 의 N≥1 까지 본다(py(h)~(j)). 같은 리뷰가 함수형 테스트·conftest 만 있는 레포도 unittest 로 떨어져 0개 실행되는 경로를 짚어, 러너 선택을
+  위 `_py_runner` 로 넓혔다(py(l)~(o)). 그 첫 판은 파일 형을 정규식(`import unittest`·`TestCase` 문자열)으로 봐서
+  `from unittest.mock import patch` 를 쓰는 pytest 함수형 파일을 unittest 형으로 세 0개 실행했다(3.14 에서 exit 5 재현) — 정규식 휴리스틱이
+  입력마다 다르게 틀려, 판정을 구문 트리로 바꿨다(py(p)~(u)). 구문 트리 첫 판은 베이스 끝 이름만 봐서 같은 모듈의
+  `Base(unittest.TestCase)` 를 상속한 `TestFoo(Base)` 를 pytest 클래스형으로 세 순수 unittest 레포에 pytest 명령을 확정했다 — 베이스를 같은
+  모듈 안에서 해소하고, 해소 불가는 근거에서 빼게 좁혔다(py(v)~(x)).
+- **한계**: pytest 설정은 스냅숏 **루트**만 본다. 기준선 비교는 없다(다른 회귀 명령과 같이 하나라도 실패하면 FAIL).
+  pytest 로 판정된 레포(설정·conftest·함수형)에서 그 파이썬에 pytest 가 없으면 게이트가 막힌다 — 의도다. `preflight.js` 의 회귀 명령 지시("돌리지 못했으면
+  그것도 FAIL")를 따라 fail-closed 로 두었고, 해결은 pytest 설치다(test-runner 는 reason 에 환경 원인과 해결을 적는다).
+- **어디**: `classify.sh`(Python 테스트 블록), `agents/test-runner.md`(0.8), `SKILL.md`(lane 표 한 줄), `docs/backlog.md`(닫힘),
+  `meta-test/engine.sh`(「Python 테스트」 절 py(a)~(x)). `ENGINE_VERSION` 2.7 → **2.8**(호환되는 추가 — 새 회귀 명령·laneMeta 키,
+  프로필 계약 그대로).
