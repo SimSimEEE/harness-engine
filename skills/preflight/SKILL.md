@@ -653,7 +653,8 @@ Rev.5 를 논하기 전에 여기서 세어야 할 것: 거부 사유 분포, wa
 - `receipt.sh record` 가 영수증의 브랜치 항목과 관측 로그의 `event: record`(recorded·refused 모두)에
   `engineVersion` 으로 남긴다. 값은 `lib.sh` 의 `pf_engine_version` 하나가 읽는다.
 - **기록에서는 판정에 쓰지 않는다.** 파일이 없거나 `MAJOR.MINOR` 형식이 아니면 `null` 로 남기고 기록은 그대로 진행된다
-  (meta-test 고정).
+  (meta-test 고정). 단 프로필(엔진·오버레이 `profiles/`)이 있으면 기록의 카테고리 재판정(CONTRACT `category-recheck-at-record`)이
+  아래 프로필 결속에서 멈춰 `category-unresolved`(detail `profile`)로 거부된다 — 분류도 같은 이유로 exit 3 이다(meta-test 고정).
 - **프로필 결속.** 레포별 프로필은 자기를 만든 엔진 버전을 `engineVersion`(필수, `"MAJOR.MINOR"` 문자열)으로 적는다.
   분류·조회가 프로필을 읽을 때 지금 엔진과 대조해 **MAJOR 가 같고 프로필 MINOR ≤ 엔진 MINOR** 일 때만 적재한다.
   - 프로필 MAJOR 가 낮다 → 엔진 계약이 깨졌다. `DECISIONS.md` 에서 그 MAJOR 의 계약 변경을 보고 프로필을 고친 뒤
