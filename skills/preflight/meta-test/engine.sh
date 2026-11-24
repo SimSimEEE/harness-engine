@@ -5577,6 +5577,140 @@ ssmforge "$SSD/a.all2.json" "$SSD/a.all2.m2.json" drop+auto
 python3 -c 'import sys; s=open(sys.argv[1], encoding="utf-8").read(); i=s.index("- `event: record` / `outcome: refused`"); seg=s[i:s.index("\n- `event:", i + 1)]; sys.exit(0 if "`secret-scan-mode-mismatch`" in seg else 1)' "$HOME/.claude/skills/preflight/SKILL.md" 2>"$T/py.err" \
   && ok "SS-o: secret-scan-mode-mismatch 가 SKILL.md 관측 로그 사유 목록에 있다" || ng "SS-o: 새 거부 사유가 SKILL.md 에 없다" "secret-scan-mode-mismatch"
 
+# (o-f) 모드 거부 문구·로그 detail 은 원인별이다(사유 코드는 secret-scan-mode-mismatch 그대로) — 원인마다 할 일 한 줄
+ssmdetail(){ python3 -c 'import json,sys; L=[json.loads(l) for l in open(sys.argv[1]) if l.strip()]; r=[e for e in L if e.get("event")=="record"]; print(r[-1].get("detail") if r else None)' "$T/ss-rec.jsonl" 2>"$T/py.err"; }
+ssrec "$SSD/a0" commit '{}' "$SSD/a0.m1.json" > /dev/null
+[ "$(ssmdetail)" = "['lane-missing']" ] && grep -qF '[lane-missing]' "$T/ss-rec.out" && grep -qF '(재분류)' "$T/ss-rec.out" \
+  && ! grep -qF '(lane 재실행)' "$T/ss-rec.out" \
+  && ok "SS-o: 결과 없음 → detail [lane-missing], 문구는 재분류를 안내한다" || ng "SS-o: 결과 없음의 원인 문구가 어긋난다 [$(ssmdetail)] ($(cat "$T/ss-rec.out"))" "['lane-missing'] · (재분류)"
+ssrec "$SSD/a0" commit '{"secret-scanner":{"status":"SKIPPED","reason":"x"}}' "$SSD/a0.honest.json" > /dev/null
+[ "$(ssmdetail)" = "['lane-skipped']" ] && grep -qF '[lane-skipped]' "$T/ss-rec.out" && grep -qF '(lane 재실행)' "$T/ss-rec.out" \
+  && ! grep -qF '(재분류)' "$T/ss-rec.out" \
+  && ok "SS-o: SKIPPED → detail [lane-skipped], 문구는 lane 재실행을 안내한다" || ng "SS-o: SKIPPED 의 원인 문구가 어긋난다 [$(ssmdetail)] ($(cat "$T/ss-rec.out"))" "['lane-skipped'] · (lane 재실행)"
+ssrec "$SSD/a0" commit '{"secret-scanner":{"status":"NOT_APPLICABLE","reason":"x"}}' "$SSD/a0.honest.json" > /dev/null
+[ "$(ssmdetail)" = "['lane-not-applicable']" ] && grep -qF '[lane-not-applicable]' "$T/ss-rec.out" && grep -qF '(카테고리 확인)' "$T/ss-rec.out" \
+  && ok "SS-o: NOT_APPLICABLE → detail [lane-not-applicable], 문구는 카테고리 확인을 안내한다" || ng "SS-o: NOT_APPLICABLE 의 원인 문구가 어긋난다 [$(ssmdetail)] ($(cat "$T/ss-rec.out"))" "['lane-not-applicable'] · (카테고리 확인)"
+ssrec "$SSD/a0" commit '{"secret-scanner":"PASS"}' "$SSD/a0.m3.json" > /dev/null
+[ "$(ssmdetail)" = "['mode-differs']" ] && grep -qF '[mode-differs]' "$T/ss-rec.out" && grep -qF 'SECRET_SCAN 이 분류 뒤 바뀌었는지 확인' "$T/ss-rec.out" \
+  && ok "SS-o: 분류의 mode 가 다름 → detail [mode-differs], 문구는 카테고리 규칙 확인 뒤 재분류를 안내한다" || ng "SS-o: mode 다름의 원인 문구가 어긋난다 [$(ssmdetail)] ($(cat "$T/ss-rec.out"))" "['mode-differs']"
+ssrec "$SSD/a0" commit '{}' "$SSD/a0.m2.json" > /dev/null
+[ "$(ssmdetail)" = "['mode-differs', 'lane-missing']" ] \
+  && ok "SS-o: 원인이 둘이면(mode 위조 + lane 뺌) detail 에 둘 다 싣는다" || ng "SS-o: 겹친 원인이 하나로 합쳐졌다 [$(ssmdetail)]" "['mode-differs', 'lane-missing']"
+
+# BEGIN category-recheck — 기록 단계가 카테고리 소속을 다시 판정한다(DECISIONS.md 2026-11-24 「기록 단계가 카테고리 소속을 다시 판정한다」)
+echo "== 기록 단계 카테고리 소속 재판정 =="
+crreason(){ python3 -c 'import json,sys; L=[json.loads(l) for l in open(sys.argv[1]) if l.strip()]; r=[e for e in L if e.get("event")=="record"]; e=r[-1] if r else {}; print(e.get("reason"), e.get("detail"), e.get("declared"), e.get("rejudged"))' "$T/ss-rec.jsonl" 2>"$T/py.err"; }
+crforge(){ python3 - "$1" "$2" "$3" <<'PYF' 2>"$T/py.err"
+import json, sys
+src, dst, how = sys.argv[1:]
+d = json.load(open(src))
+parts = how.split('+')
+d['category'] = parts[0]
+if 'drop' in parts:
+    d['selected'].pop('secret-scanner', None); d['laneMeta'].pop('secret-scanner', None)
+    d['notSelected']['secret-scanner'] = 'secret-scan-clean — 위조'
+if 'auto' in parts:
+    d['secretScan']['mode'] = 'auto'
+json.dump(d, open(dst, 'w'))
+PYF
+}
+# (a) 정직한 기록은 통과 — 커밋 모드(auto·always)와 PR 모드
+[ "$(ssrec "$SSD/a0" commit '{"secret-scanner":"PASS"}' "$SSD/a0.honest.json")" = "('recorded', None)" ] \
+  && [ "$(ssrec "$SSD/a" commit '{}' "$SSD/a.honest.json")" = "('recorded', None)" ] \
+  && ok "CR-a: 정직한 커밋 분류(generic·shell-tool)는 소속 재판정을 지나 기록된다" || ng "CR-a: 정직한 커밋 기록이 거부된다 ($(cat "$T/ss-rec.out"))" "recorded"
+ssrepo "$SSD/cp"; git -C "$SSD/cp" update-ref refs/remotes/origin/main "$(git -C "$SSD/cp" rev-parse HEAD)"
+git -C "$SSD/cp" checkout -q -b feat/cr; printf 'more\n' >> "$SSD/cp/a.txt"; git -C "$SSD/cp" add -A; git -C "$SSD/cp" "$G" -qm c1
+sscls "$SSD/cp" pr
+[ "$(ssj "$SSD/cp.cls.json" 'd["mode"], d["category"]' $LINENO)" = "pr shell-tool" ] \
+  && [ "$(ssrec "$SSD/cp" pr "$(sslanes "$SSD/cp.cls.json" '')" "$SSD/cp.cls.json")" = "('recorded', None)" ] \
+  && ok "CR-a: 정직한 PR 분류(shell-tool)는 HEAD 스냅숏 재판정을 지나 기록된다" || ng "CR-a: 정직한 PR 기록이 거부된다 ($(cat "$T/ss-rec.out"))$(_diag "$T/ss-cl.err")" "pr shell-tool · recorded"
+# PR 재판정은 인덱스가 아니라 HEAD 를 본다 — 표식을 인덱스에서만 지워도(커밋 안 함) 소속은 그대로다
+git -C "$SSD/cp" rm -q --cached hooks/preflight-gate.sh
+[ "$(bash "$CL" "$SSD/cp" category --of=pr 2>"$T/py.err" | python3 -c 'import json,sys; print(json.load(sys.stdin)["category"])' 2>>"$T/py.err")" = shell-tool ] \
+  && [ "$(bash "$CL" "$SSD/cp" category 2>"$T/py.err" | python3 -c 'import json,sys; print(json.load(sys.stdin)["category"])' 2>>"$T/py.err")" = generic ] \
+  && [ "$(ssrec "$SSD/cp" pr "$(sslanes "$SSD/cp.cls.json" '')" "$SSD/cp.cls.json")" = "('recorded', None)" ] \
+  && ok "CR-a: 조회 --of=pr 는 HEAD 스냅숏, 기본은 인덱스 — PR 기록은 인덱스만의 변경에 흔들리지 않는다" \
+  || ng "CR-a: PR 재판정이 HEAD 스냅숏을 보지 않는다 ($(cat "$T/ss-rec.out"))" "--of=pr shell-tool · 기본 generic · recorded"
+git -C "$SSD/cp" add hooks/preflight-gate.sh
+# (b) 분류 artifact 의 카테고리 이름을 다른 실존 카테고리로 바꾸면 category-mismatch — 커밋·PR 모드 둘 다
+crforge "$SSD/a.honest.json" "$SSD/a.cr1.json" generic
+[ "$(ssrec "$SSD/a" commit '{}' "$SSD/a.cr1.json")" = "('refused', 'category-mismatch')" ] \
+  && [ "$(crreason)" = "category-mismatch None generic shell-tool" ] \
+  && grep -qF "분류 'generic' != 다시 판정 'shell-tool'" "$T/ss-rec.out" \
+  && ok "CR-b: shell-tool 분류의 카테고리를 generic 으로 바꾸면 category-mismatch (로그에 선언·재판정)" \
+  || ng "CR-b: 카테고리 이름 변경이 category-mismatch 로 거부되지 않았다 [$(crreason)] ($(cat "$T/ss-rec.out"))" "category-mismatch · generic != shell-tool"
+crforge "$SSD/cp.cls.json" "$SSD/cp.cr1.json" generic
+[ "$(ssrec "$SSD/cp" pr "$(sslanes "$SSD/cp.cls.json" '')" "$SSD/cp.cr1.json")" = "('refused', 'category-mismatch')" ] \
+  && ok "CR-b: PR 분류의 카테고리 이름을 바꿔도 category-mismatch" || ng "CR-b: PR 분류의 카테고리 변경이 통과했다 ($(cat "$T/ss-rec.out"))" "refused category-mismatch"
+# (c) 백로그 재현의 응용 — always(generic) 분류를 auto 카테고리(shell-tool) 이름으로 바꾸고 secretScan.mode 를 auto 로,
+#     secret-scanner 를 뺀다. 재스캔은 CLEAN·shell-tool 규칙은 auto 라 모드 대조로는 통과하던 위조다.
+crforge "$SSD/a0.honest.json" "$SSD/a0.cr1.json" shell-tool+drop+auto
+[ "$(ssrec "$SSD/a0" commit '{}' "$SSD/a0.cr1.json")" = "('refused', 'category-mismatch')" ] \
+  && [ "$(crreason)" = "category-mismatch None shell-tool generic" ] \
+  && ok "CR-c: always→auto 카테고리 이름 위조(secret-scanner 뺌, mode auto)가 category-mismatch 로 거부된다" \
+  || ng "CR-c: always→auto 위조가 기록됐다 [$(crreason)] ($(cat "$T/ss-rec.out"))" "category-mismatch shell-tool → generic"
+# (d) 프로필로 고정된 레포 — 재판정도 프로필 규칙(오버레이 profiles/)으로 읽는다
+_crev=$(head -n 1 "$HOME/.claude/skills/preflight/ENGINE_VERSION" | tr -d '[:space:]')
+CRP="$SSD/crprof"; mkdir -p "$CRP/profiles/acme"
+printf '{"repo":"Acme/Plain","category":"generic","engineVersion":"%s","adjustments":[]}\n' "$_crev" > "$CRP/profiles/acme/plain.json"
+ssrepo "$SSD/pf" plain; git -C "$SSD/pf" remote add origin "https://example.invalid/Acme/Plain.git"
+printf 'more\n' >> "$SSD/pf/a.txt"; git -C "$SSD/pf" add -A; PF_OVERLAY_DIR="$CRP" sscls "$SSD/pf"
+[ "$(ssj "$SSD/pf.cls.json" 'd["category"], d["profile"]["path"]' $LINENO)" = "generic profiles/acme/plain.json" ] \
+  && [ "$(PF_OVERLAY_DIR="$CRP" ssrec "$SSD/pf" commit '{"secret-scanner":"PASS"}' "$SSD/pf.cls.json")" = "('recorded', None)" ] \
+  && ok "CR-d: 프로필로 고정된 레포(generic)의 정직한 분류는 기록된다" || ng "CR-d: 프로필 레포의 정직한 기록이 거부된다 ($(cat "$T/ss-rec.out"))$(_diag "$T/ss-cl.err")" "generic profiles/acme/plain.json · recorded"
+crforge "$SSD/pf.cls.json" "$SSD/pf.cr1.json" shell-tool
+[ "$(PF_OVERLAY_DIR="$CRP" ssrec "$SSD/pf" commit '{"secret-scanner":"PASS"}' "$SSD/pf.cr1.json")" = "('refused', 'category-mismatch')" ] \
+  && grep -qF '프로필 profiles/acme/plain.json 의 generic' "$T/ss-rec.out" \
+  && ok "CR-d: 프로필 레포의 카테고리 이름 위조는 프로필 카테고리(generic)로 다시 판정돼 거부되고, 근거에 프로필이 나온다" \
+  || ng "CR-d: 프로필 레포 재판정의 근거가 프로필이 아니다 ($(cat "$T/ss-rec.out"))" "category-mismatch · 프로필 profiles/acme/plain.json 의 generic"
+# 기록 시점 프로필이 신호와 어긋나면(분류는 통과했던 레포) 판정할 수 없다 — category-unresolved/profile
+CRP2="$SSD/crprof2"; mkdir -p "$CRP2/profiles/acme"
+printf '{"repo":"Acme/Plain","category":"shell-tool","engineVersion":"%s","adjustments":[]}\n' "$_crev" > "$CRP2/profiles/acme/plain.json"
+[ "$(PF_OVERLAY_DIR="$CRP2" ssrec "$SSD/pf" commit '{"secret-scanner":"PASS"}' "$SSD/pf.cls.json")" = "('refused', 'category-unresolved')" ] \
+  && [ "$(crreason)" = "category-unresolved profile generic None" ] \
+  && ok "CR-d: 기록 시점 프로필이 신호와 어긋나면 category-unresolved(detail profile)로 거부" \
+  || ng "CR-d: 프로필 불일치에서 기록이 거부되지 않거나 사유가 다르다 [$(crreason)] ($(cat "$T/ss-rec.out"))" "category-unresolved profile"
+# 겹침·적재 실패(exit 3)도 기록을 거부하고 detail 로 가른다
+CRO="$SSD/crover"; mkdir -p "$CRO/categories/cr-dup"
+printf '{"categories": ["cr-dup"]}\n' > "$CRO/categories/categories.json"
+printf '{"procedures": [{"id": "x", "text": "x"}]}\n' > "$CRO/categories/cr-dup/procedures.json"
+printf 'def match(ctx):\n    return ["a.txt"] if ctx.snap_has("a.txt") else []\n' > "$CRO/categories/cr-dup/rules.py"
+[ "$(PF_OVERLAY_DIR="$CRO" ssrec "$SSD/a" commit '{}' "$SSD/a.honest.json")" = "('refused', 'category-unresolved')" ] \
+  && [ "$(crreason)" = "category-unresolved overlap shell-tool None" ] && grep -qF '카테고리 판정이 겹친다' "$T/ss-rec.out" \
+  && ok "CR-d: 기록 시점 카테고리 판정이 겹치면 category-unresolved(detail overlap)" \
+  || ng "CR-d: 겹침에서 기록이 거부되지 않거나 사유가 다르다 [$(crreason)] ($(cat "$T/ss-rec.out"))" "category-unresolved overlap"
+CRB="$SSD/crbroken"; mkdir -p "$CRB/categories"; printf '{not json' > "$CRB/categories/categories.json"
+[ "$(PF_OVERLAY_DIR="$CRB" ssrec "$SSD/a" commit '{}' "$SSD/a.honest.json")" = "('refused', 'category-unresolved')" ] \
+  && [ "$(crreason)" = "category-unresolved load-failed shell-tool None" ] \
+  && ok "CR-d: 기록 시점 카테고리 적재 실패면 category-unresolved(detail load-failed)" \
+  || ng "CR-d: 적재 실패에서 기록이 거부되지 않거나 사유가 다르다 [$(crreason)] ($(cat "$T/ss-rec.out"))" "category-unresolved load-failed"
+# (e) 분류 뒤 다른 카테고리 표식이 스테이징되면 소속 재판정보다 index-changed 가 먼저 잡는다(스냅숏 결속이 앞)
+ssrepo "$SSD/ce" plain; printf 'more\n' >> "$SSD/ce/a.txt"; git -C "$SSD/ce" add -A; sscls "$SSD/ce"
+mkdir -p "$SSD/ce/skills/preflight" "$SSD/ce/hooks"; : > "$SSD/ce/skills/preflight/meta-test.sh"; : > "$SSD/ce/hooks/preflight-gate.sh"; git -C "$SSD/ce" add -A
+[ "$(bash "$CL" "$SSD/ce" category 2>"$T/py.err" | python3 -c 'import json,sys; print(json.load(sys.stdin)["category"])' 2>>"$T/py.err")" = shell-tool ] \
+  && [ "$(ssrec "$SSD/ce" commit '{"secret-scanner":"PASS"}' "$SSD/ce.cls.json")" = "('refused', 'index-changed')" ] \
+  && ok "CR-e: 분류(generic) 뒤 shell-tool 표식을 스테이징하면(지금 소속 shell-tool) 사유는 category-mismatch 가 아니라 index-changed" \
+  || ng "CR-e: 표식 스테이징의 거부 순서가 어긋난다 ($(cat "$T/ss-rec.out"))" "지금 소속 shell-tool · refused index-changed"
+# PR 모드: 분류 뒤 표식을 커밋하면 stale-head 가 먼저다
+ssrepo "$SSD/cq" plain; git -C "$SSD/cq" update-ref refs/remotes/origin/main "$(git -C "$SSD/cq" rev-parse HEAD)"
+git -C "$SSD/cq" checkout -q -b feat/cr; printf 'more\n' >> "$SSD/cq/a.txt"; git -C "$SSD/cq" add -A; git -C "$SSD/cq" "$G" -qm c1; sscls "$SSD/cq" pr
+mkdir -p "$SSD/cq/skills/preflight" "$SSD/cq/hooks"; : > "$SSD/cq/skills/preflight/meta-test.sh"; : > "$SSD/cq/hooks/preflight-gate.sh"; git -C "$SSD/cq" add -A; git -C "$SSD/cq" "$G" -qm marker
+[ "$(ssrec "$SSD/cq" pr "$(sslanes "$SSD/cq.cls.json" '')" "$SSD/cq.cls.json")" = "('refused', 'stale-head')" ] \
+  && ok "CR-e: PR 분류(generic) 뒤 표식을 커밋하면 사유는 stale-head (재판정보다 앞)" \
+  || ng "CR-e: PR 모드 표식 커밋의 거부 순서가 어긋난다 ($(cat "$T/ss-rec.out"))" "refused stale-head"
+# 조회 인자 — --of 는 category 조회만, 조회는 --of 하나만 받는다
+bash "$CL" "$SSD/a" commit --of=pr > /dev/null 2>&1; _cr1=$?
+bash "$CL" "$SSD/a" category --qa > /dev/null 2>&1; _cr2=$?
+bash "$CL" "$SSD/a" category --of=pr --of=commit > /dev/null 2>&1; _cr3=$?
+[ "$_cr1 $_cr2 $_cr3" = "2 2 2" ] && ok "CR: --of 는 분류 모드에서 거부, 조회는 다른 플래그·두 번째 --of 를 거부 (exit 2)" \
+  || ng "CR: 조회 인자 검사가 어긋난다 ($_cr1 $_cr2 $_cr3)" "2 2 2"
+python3 -c 'import sys; s=open(sys.argv[1], encoding="utf-8").read(); i=s.index("- `event: record` / `outcome: refused`"); seg=s[i:s.index("\n- `event:", i + 1)]; sys.exit(0 if all(r in seg for r in ("`category-mismatch`", "`category-unresolved`")) else 1)' "$HOME/.claude/skills/preflight/SKILL.md" 2>"$T/py.err" \
+  && ok "CR: category-mismatch·category-unresolved 가 SKILL.md 관측 로그 사유 목록에 있다" || ng "CR: 새 거부 사유가 SKILL.md 에 없다" "category-mismatch · category-unresolved"
+grep -qF 'CONTRACT: category-recheck-at-record' "$HOME/.claude/skills/preflight/receipt.sh" \
+  && grep -qF 'CONTRACT: category-recheck-at-record' "$HOME/.claude/skills/preflight/classify.sh" \
+  && ok "CR: 소속 재판정 계약 주석이 receipt.sh·classify.sh 에 있다" || ng "CR: 계약 주석이 없다" "category-recheck-at-record"
+# END category-recheck
+
 # 정적 계약 — 기록 단계 재스캔과 프롬프트 블록이 코드에 있다
 grep -qF 'CONTRACT: secret-scan-recheck-at-record' "$HOME/.claude/skills/preflight/receipt.sh" \
   && grep -qF 'CONTRACT: secret-scan-recheck-at-record' "$HOME/.claude/skills/preflight/classify.sh" \

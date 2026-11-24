@@ -100,6 +100,7 @@ record)
     LANES="$lanes" CLASSIFY="$classify" PLANJSON="$planjson" PLANQA="$planqa" PLANCLAIMS="$planclaims" COMMON_DIR="$common_dir" DIR="$dir" REPO_TOP="$repo_top" TRANSCRIPTS="$transcripts" ENGINE_VER="$engver" \
     VIA="${PF_RECORD_VIA:-}" OPT_B64="$_opt_b64" OPT_SHA="$_opt_sha" OPT_MARKER="$_opt_marker" LANES_B64="$lanes_b64" LANES_SHA="$lanes_sha" \
     TMARKER="$tmarker" POS_LANES="${4:-}" POS_TRANSCRIPTS="$transcripts" SECRET_SCAN_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/secret-scan.sh" \
+    CLASSIFY_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/classify.sh" \
     PF_CATS="$(pf_category_roots)" python3 - <<'PY'
 import json, os, re, subprocess, sys
 
@@ -485,12 +486,58 @@ if os.environ.get('KIND') == 'pr':
         _log('record', 'refused', reason='plan-changed', planId=_pl.get('planId'))
         sys.exit(1)
 
+# CONTRACT: category-recheck-at-record
+# 분류 artifact 의 `category` 는 고칠 수 있다 — 아래 재스캔은 그 이름의 rules.py 로 SECRET_SCAN 모드를 구하므로, always
+# 카테고리를 auto 카테고리 이름으로 바꾸면 모드 대조가 통과한다(DECISIONS.md 2026-11-23 「기록 단계가 시크릿 검사 모드를 다시 구한다」의
+# 한계). 그래서 여기서 **같은 대상으로 소속을 다시 판정**한다. 판정은 분류와 같은 코드다 — `classify.sh <dir> category`
+# (커밋 모드: 인덱스 스냅숏) 또는 `--of=pr`(PR 모드: HEAD 스냅숏). 카테고리 루트·오버레이·프로필 고정도 분류와 같은 규칙으로 읽는다.
+# 스냅숏 결속은 앞의 검사가 맡는다 — 커밋 모드는 index-changed(인덱스가 분류의 것과 같다), PR 모드는 stale-head(HEAD 가 같다).
+# 그래서 이 검사는 그 둘보다 **뒤**에 있다: 분류 뒤 다른 카테고리 표식이 스테이징되면 사유는 index-changed 다(meta-test CR-e).
+#  - 다시 판정한 카테고리가 선언과 다르면 `category-mismatch`.
+#  - 다시 판정이 겹침·적재 실패(exit 3)이거나 실행·출력이 깨지면 `category-unresolved` — detail 로 overlap·load-failed·
+#    profile·error 를 가른다. 판정할 수 없으면 기록하지 않는다(모른다는 것을 일치로 읽지 않는다).
+# 비용: 분류의 카테고리 판정 한 번(git ls-files/ls-tree + rules.py match) — DECISIONS.md 2026-11-24 「기록 단계가 카테고리 소속을 다시 판정한다」.
+_cat_decl = classify.get('category')
+_cat_argv = ['bash', os.environ['CLASSIFY_TOOL'], os.environ['DIR'], 'category'] + (['--of=pr'] if os.environ.get('KIND') == 'pr' else [])
+_cat_now, _cat_kind, _cat_err = None, None, ''
+try:
+    _cat_p = subprocess.run(_cat_argv, capture_output=True, text=True, timeout=120)
+    _cat_err = (_cat_p.stderr or '').strip()
+    if _cat_p.returncode == 0:
+        _cat_now = json.loads(_cat_p.stdout)
+        if not isinstance(_cat_now, dict) or 'category' not in _cat_now:
+            _cat_now, _cat_kind = None, 'error'
+    elif _cat_p.returncode == 3:
+        _cat_first = _cat_err.splitlines()[0] if _cat_err else ''
+        _cat_kind = ('overlap' if _cat_first.startswith('카테고리 판정이 겹친다') else
+                     'profile' if _cat_first.startswith(('프로필 적재 실패', '프로필과 신호 추론이 어긋난다')) else 'load-failed')
+    else:
+        _cat_kind = 'error'
+except Exception as e:
+    _cat_kind, _cat_err = 'error', f'{type(e).__name__}: {e}'
+if _cat_kind:
+    print("게이트 기록 거부 — 카테고리 소속을 다시 판정하지 못했다 (" + {
+        'overlap': '카테고리 판정이 겹친다', 'load-failed': '카테고리 적재 실패',
+        'profile': '프로필 적재 실패·프로필과 신호 불일치', 'error': '판정 실행 실패'}[_cat_kind] + ")")
+    for _l in _cat_err.splitlines()[:6]: print(f"    {_disp(_l)}")
+    print("  분류할 수 없는 상태에서는 기록하지 않는다. 위 원인을 고친 뒤 classify.sh 부터 게이트를 다시 돌려라.")
+    _log('record', 'refused', reason='category-unresolved', detail=_cat_kind, declared=_cat_decl)
+    sys.exit(1)
+if _cat_now.get('category') != _cat_decl:
+    print("게이트 기록 거부 — 분류 artifact 의 카테고리가 다시 판정한 소속과 다르다")
+    print(f"    분류 {_cat_decl!r} != 다시 판정 {_cat_now.get('category')!r}")
+    print(f"    근거: {_disp(str(_cat_now.get('basis') or ''))}")
+    print("  분류 artifact 가 바뀌었다 — 카테고리 이름은 시크릿 검사 모드·관례 lane 을 정한다. classify.sh 부터 게이트를 다시 돌려라.")
+    _log('record', 'refused', reason='category-mismatch', declared=_cat_decl, rejudged=_cat_now.get('category'))
+    sys.exit(1)
+
 # CONTRACT: secret-scan-recheck-at-record
 # secret-scanner 를 건너뛸지는 분류의 결정론 스캔(secretScan)이 정한다. 분류 artifact 는 고칠 수 있으므로
 # (status 를 CLEAN 으로 바꾸거나 selected 에서 secret-scanner 를 지우면 lane 이 조용히 빠진다) 여기서
 # 같은 대상을 다시 스캔한다. **범위·파일은 분류 artifact 에서 받지 않고 다시 구한다** — 커밋 모드는 HEAD 대 지금
 # 인덱스(위 index-changed 가 분류의 인덱스와 같음을 보장한다), PR 모드는 base 를 다시 해석한 merge-base..HEAD.
-# **카테고리는 분류의 선언값을 쓴다**(민감 경로 추가분 SECRET_SENSITIVE_EXTRA 를 고른다) — 카테고리 위조는 이 검사 범위 밖이다.
+# **카테고리는 분류의 선언값을 쓴다**(민감 경로 추가분 SECRET_SENSITIVE_EXTRA 를 고른다) — 선언값이 소속과 같은지는 바로 위
+# CONTRACT category-recheck-at-record 가 먼저 확인한다.
 #  (a) 재스캔의 status·patternsVersion 이 분류의 secretScan 과 다르면 거부한다(분류 뒤 패턴 파일이나 대상이 바뀜).
 #  (b) 재스캔이 CLEAN 이 아닌데 secret-scanner 결과가 없거나 SKIPPED·NOT_APPLICABLE 이면 거부한다.
 # 분류에 secretScan 이 없는 옛 분류는 secret-scanner 가 선택돼 있을 때만 건너뛴다 — 옛 엔진은 그 lane 을 늘 골랐다.
@@ -504,8 +551,10 @@ if os.environ.get('KIND') == 'pr':
 #      이면, 또는 분류의 secretScan.mode 가 다시 구한 모드와 다르면 거부한다. 사유는 `secret-scan-mode-mismatch` 다
 #      ((a)·(b) 에 걸리면 그쪽 사유가 먼저다). 재스캔이 카테고리를 읽기 전에 죽어 categoryMode 가 없으면 이 대조는
 #      건너뛴다 — 그때 status 는 SCAN_ERROR 라 (a)·(b) 가 secret-scanner 결과를 요구한다.
-#      한계: 카테고리 **이름** 자체를 위조하면(always 카테고리를 auto 카테고리 이름으로 바꿈) 이 대조는 그 이름의
-#      규칙으로 모드를 구하므로 통과한다. 소속을 다시 판정하지 않는다 — DECISIONS.md 「기록 단계가 시크릿 검사 모드를 다시 구한다」.
+#      카테고리 **이름** 위조(always 카테고리를 auto 카테고리 이름으로)는 위 category-recheck-at-record 가 category-mismatch 로 막는다.
+#      거부 문구와 로그 detail 은 원인별이다(사유 코드는 하나): lane-missing(결과 없음 → 재분류) · lane-skipped(SKIPPED → lane 재실행)
+#      · lane-not-applicable(NOT_APPLICABLE → 카테고리 확인 뒤 lane 재실행) · mode-differs(분류의 mode 가 다시 구한 값과 다름 → 카테고리
+#      규칙 확인 뒤 재분류). 둘 이상이면 모두 싣는다.
 _ss_decl = classify.get('secretScan')
 _ss_selected = 'secret-scanner' in (classify.get('selected') or {})
 if _ss_decl is not None or not _ss_selected:
@@ -537,15 +586,28 @@ if _ss_decl is not None or not _ss_selected:
     if _ss_now.get('status') != 'CLEAN' and _ss_lane_absent:
         _ss_bad.append(f"재스캔 {_ss_now.get('status')} 인데 secret-scanner 결과가 "
                        + ('없다' if not _ss_lane_st else _ss_lane_st))
-    _ss_mode_bad = []
+    _ss_mode_bad = []   # (원인 코드, 사실 한 줄, 할 일 한 줄)
+    _ss_cat_s = repr(classify.get('category'))
     if _ss_mode_now is not None:
         _ss_mode_decl = _ss_decl.get('mode') if isinstance(_ss_decl, dict) else None
         if isinstance(_ss_decl, dict) and _ss_mode_decl != _ss_mode_now:
-            _ss_mode_bad.append(f"mode: 분류 {_ss_mode_decl!r} != 다시 구한 {_ss_mode_now!r} "
-                                f"(카테고리 {classify.get('category')!r}, 분류 모드 {classify.get('mode')!r})")
+            _ss_mode_bad.append(('mode-differs',
+                                 f"mode: 분류 {_ss_mode_decl!r} != 다시 구한 {_ss_mode_now!r} "
+                                 f"(카테고리 {_ss_cat_s}, 분류 모드 {classify.get('mode')!r})",
+                                 f"카테고리 {_ss_cat_s} 의 rules.py SECRET_SCAN 이 분류 뒤 바뀌었는지 확인하고 classify.sh 부터 다시 돌려라(재분류)."))
         if _ss_mode_now == 'always' and _ss_lane_absent:
-            _ss_mode_bad.append(f"카테고리 {classify.get('category')!r} 는 always 인데 secret-scanner 결과가 "
-                                + ('없다' if not _ss_lane_st else _ss_lane_st))
+            if not _ss_lane_st:
+                _ss_mode_bad.append(('lane-missing',
+                                     f"카테고리 {_ss_cat_s} 는 always 인데 secret-scanner 결과가 없다 (분류가 고르지 않았다)",
+                                     "always 카테고리의 분류는 secret-scanner 를 고른다 — classify.sh 부터 게이트를 다시 돌려라(재분류)."))
+            elif _ss_lane_st == 'SKIPPED':
+                _ss_mode_bad.append(('lane-skipped',
+                                     f"카테고리 {_ss_cat_s} 는 always 인데 secret-scanner 결과가 SKIPPED",
+                                     "always 카테고리에서는 건너뛸 수 없다 — secret-scanner lane 을 다시 돌려 판정 결과로 기록해라(lane 재실행)."))
+            else:
+                _ss_mode_bad.append(('lane-not-applicable',
+                                     f"카테고리 {_ss_cat_s} 는 always 인데 secret-scanner 결과가 NOT_APPLICABLE",
+                                     f"카테고리 {_ss_cat_s} 가 맞는지 category.sh 로 확인하고(카테고리 확인), 맞으면 secret-scanner lane 을 다시 돌려라."))
     _ss_reason, _ss_base_decl, _ss_base_now = 'secret-scan-mismatch', None, None
     if (_ss_bad and os.environ.get('KIND') == 'pr' and isinstance(_ss_decl, dict)
             and _ss_decl.get('status') != _ss_now.get('status')):
@@ -571,9 +633,11 @@ if _ss_decl is not None or not _ss_selected:
         sys.exit(1)
     if _ss_mode_bad:
         print("게이트 기록 거부 — 시크릿 검사 모드가 카테고리 규칙과 맞지 않는다")
-        for _b in _ss_mode_bad: print(f"    {_b}")
-        print("  분류 artifact 가 바뀌었다 — always 카테고리(또는 all 모드)는 secret-scanner 를 늘 돌린다. classify.sh 부터 게이트를 다시 돌려라.")
-        _log('record', 'refused', reason='secret-scan-mode-mismatch', detail=_ss_mode_bad,
+        for _c, _fact, _todo in _ss_mode_bad:
+            print(f"    [{_c}] {_fact}")
+            print(f"      → {_todo}")
+        _log('record', 'refused', reason='secret-scan-mode-mismatch', detail=[_c for _c, _, _ in _ss_mode_bad],
+             facts=[_f for _, _f, _ in _ss_mode_bad],
              category=classify.get('category'), declaredMode=(_ss_decl.get('mode') if isinstance(_ss_decl, dict) else None),
              recomputedMode=_ss_mode_now)
         sys.exit(1)

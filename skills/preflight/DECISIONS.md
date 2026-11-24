@@ -445,3 +445,35 @@ a=70 a_sessions=13 b=62 main=202 home=45 norepo=78 path_outside_repo=9
 - **어디**: `preflight.js`(auto-record `payload`·기록 프롬프트), `receipt.sh`(CONTRACT `workflow-record-inputs`), `SKILL.md`(관측 로그 어휘),
   `meta-test/engine.sh`(WR-h: 긴 lane 결과 + 명령의 긴 값을 망가뜨리는 기록 에이전트 스텁으로 끝-대-끝 RECORDED;
   WR-i: 프롬프트 payload 출처 규칙; WR-j: 명령 길이). `ENGINE_VERSION` 2.6 → **2.7**(호환 — 새 거부 어휘, 2.6 옵션 형태는 그대로).
+
+### 기록 단계가 카테고리 소속을 다시 판정한다
+
+- **왜**: 2026-11-23 「기록 단계가 시크릿 검사 모드를 다시 구한다」는 분류 artifact 가 **선언한** 카테고리 이름의 `rules.py` 로 모드를
+  구했다 — 같은 절의 한계대로, always 카테고리(`generic`) 분류의 `category` 를 auto 카테고리 이름(`shell-tool`)으로 바꾸고
+  `secretScan.mode` 를 `auto` 로, `secret-scanner` 를 빼면 재스캔이 CLEAN 일 때 기록이 통과했다(meta-test CR-c 가 이 위조를 재현한다).
+  카테고리 이름은 시크릿 검사 모드만이 아니라 관례 lane·QA 규칙도 고르므로, 이름을 믿는 한 소속이 바뀐 분류를 기록이 받는다.
+- **무엇**: `receipt.sh record` 가 시크릿 재스캔 앞에서(CONTRACT `category-recheck-at-record`) `classify.sh <dir> category` 로 소속을
+  다시 판정한다. 커밋 모드는 인덱스 스냅숏(조회의 기본), PR 모드는 새 옵션 `--of=pr` 로 HEAD 스냅숏 — 분류와 같은 스냅숏이다.
+  판정 코드는 분류와 같은 경로다(`--of=pr` 는 `MODE=pr` 로 스냅숏·base 해석까지 pr 분류와 같은 줄을 지나고 판정 직후 끝난다).
+  카테고리 루트(엔진 다음 오버레이)·프로필 고정·겹침·fallback 규칙도 그대로다. 다시 판정한 카테고리가 선언과 다르면
+  `category-mismatch`(로그 `declared`·`rejudged`), 재판정이 exit 3(겹침·적재 실패·프로필 불일치)이거나 실행·출력이 깨지면
+  `category-unresolved`(`detail`: `overlap`·`load-failed`·`profile`·`error`)로 거부한다.
+- **순서**: 스냅숏 결속(커밋 `index-changed`, PR `stale-head`)이 먼저다. 분류 뒤 다른 카테고리 표식을 스테이징하면 소속도 바뀌지만
+  사유는 `index-changed` 다 — 대상이 바뀐 것이 먼저이고, 소속 불일치는 그 결과다(meta-test CR-e, 커밋·PR 둘 다).
+- **함께 바꾼 것 — 모드 거부 문구를 원인별로**: `secret-scan-mode-mismatch` 는 사유 코드를 그대로 두고(로그 호환) 사람에게 보이는
+  문구와 로그 `detail` 을 원인 코드 목록으로 나눴다 — `lane-missing`(결과 없음 → 재분류), `lane-skipped`(SKIPPED → lane 재실행),
+  `lane-not-applicable`(NOT_APPLICABLE → 카테고리 확인 뒤 lane 재실행), `mode-differs`(분류의 mode 가 다시 구한 값과 다름 → 카테고리
+  규칙 확인 뒤 재분류). 원인마다 할 일을 한 줄씩 붙이고, 둘 이상이면 모두 싣는다. `detail` 은 원래 사람이 읽는 문장 목록이었는데
+  이제 코드 목록이고, 문장은 새 키 `facts` 에 있다. 이 사유로 거부된 실례는 없었다(관찰) — 문구만의 변경이다.
+- **치른 값**: 기록마다 카테고리 판정 한 번(파이썬 기동 + `git ls-files`/`ls-tree` + 각 `rules.py` 의 `match`).
+  이 레포 체크아웃(추적 파일 117개)에서 10회 실측 중앙값: 커밋 모드 0.120초, PR 모드(`--of=pr`) 0.137초(2026-11-24).
+  재현: 레포 루트에서 `bash skills/preflight/classify.sh "$PWD" category [--of=pr]` 를 10회 돌려 벽시계 시간의 중앙값을 낸다.
+- **한계**: 재판정은 판정 **입력**(스냅숏)이 같을 때 같은 답을 낸다는 데 기댄다 — 분류와 기록 사이에 `rules.py`·`categories.json`·
+  프로필·오버레이 설정이 바뀌면 정직한 분류도 `category-mismatch`·`category-unresolved` 로 거부된다(다시 분류하면 된다).
+  `all` 분류는 커밋 기록으로만 받으므로 인덱스로 판정한다. 카테고리 이름이 아닌 다른 artifact 필드(`selected` 의 관례 lane 등)의
+  위조는 이 검사 범위 밖이다.
+- **해소**: 2026-11-23 「기록 단계가 시크릿 검사 모드를 다시 구한다」의 한계 문장(카테고리 이름 위조)은 이 절로 닫힌다.
+- **어디**: `classify.sh`(category 조회 `--of=commit|pr`), `receipt.sh`(CONTRACT `category-recheck-at-record`, CONTRACT
+  `secret-scan-recheck-at-record` (c) 원인 코드), `SKILL.md`(관측 로그 사유·라우팅 표), `meta-test/engine.sh`(CR-a~e, SS-o 원인별 문구),
+  `docs/backlog.md`(닫힘 항목에 후속 한 줄). `ENGINE_VERSION` 은 그대로다 — 2026-11-23 절과 같은 종류(위조 경로를 닫는
+  호환 강화, 프로필 계약 그대로)라 그 절의 관례를 따랐다.
