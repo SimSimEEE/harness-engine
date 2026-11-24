@@ -601,7 +601,9 @@ PR 시점에는 마일스톤 완료가 아직 참이 아니다. 그때 노트 �
    분류의 `secretScan.mode` 와 다르거나, always 인데 `secret-scanner` 결과가 없거나 SKIPPED·NOT_APPLICABLE 이다,
    `fast-path-not-empty` — 단축 경로(`via: fast-path`) 기록인데 분류의 필수 lane 이 있거나 실행 결과를 보고했다,
    `via-unknown` — 모르는 기록 경로 표시(`workflow` 를 표식 없이 붙인 경우 포함),
-   `lanes-digest-mismatch` — `--lanes-b64` 의 디코드 바이트가 `--lanes-sha256` 과 다르다(워크플로 안 기록),
+   `lanes-digest-mismatch` — 기록 에이전트 프롬프트의 `pf-record-lanes=` 줄(또는 `--lanes-b64`)의 디코드 바이트가
+   `--lanes-sha256` 과 다르거나 lane 결과의 출처 없이 `--lanes-sha256` 만 왔다(워크플로 안 기록),
+   `lanes-payload-unresolved` — 표식이 든 기록 에이전트 프롬프트 또는 그 안의 `pf-record-lanes=` 줄이 하나가 아니다(워크플로 안 기록),
    `transcripts-marker-unresolved` — 표식이 든 최근 워크플로 전사 디렉터리가 하나가 아니다(워크플로 안 기록),
    전사를 넘겼을 때만: `no-lane-evidence`·`sequence-violated`·`concealed-promotion`·`transcripts-unreadable`)
 - `event: verify` / `outcome: allowed|denied` — 훅이 실제로 무엇을 통과·차단했는가

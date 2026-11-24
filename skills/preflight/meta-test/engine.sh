@@ -5798,7 +5798,7 @@ P="$HOME/.claude/skills/preflight" bash -c '. "$1"; pf_gate_args "$2" commit --r
 # END preflight-run
 
 # BEGIN workflow-record — 워크플로 안에서 기록(DECISIONS.md 2026-11-24 「워크플로 안에서 기록」)
-echo "== 워크플로 안에서 기록 (receipt.sh --lanes-b64 · --transcripts-marker · preflight.js 기록 에이전트) =="
+echo "== 워크플로 안에서 기록 (receipt.sh --lanes-sha256 · 프롬프트 pf-record-lanes · --lanes-b64 · --transcripts-marker · preflight.js 기록 에이전트) =="
 WRD="$T/wfrec"; rm -rf "$WRD"; mkdir -p "$WRD"
 WRC="$WRD/cfg"                    # CLAUDE_CONFIG_DIR — 전사 루트는 $WRC/projects
 ssrepo "$WRD/r" plain; printf 'more\n' >> "$WRD/r/a.txt"; git -C "$WRD/r" add a.txt
@@ -5922,10 +5922,14 @@ async function agent(prompt, opts) {
     if (opts.label === 'snapshot-cleanup') return 'ok';
     if (opts.label === 'record') {
         fs.mkdirSync(wfdir, { recursive: true });
-        fs.writeFileSync(path.join(wfdir, `agent-rec${n}.jsonl`), JSON.stringify({ timestamp: '2026-11-24T10:00:30Z', message: { role: 'user', content: prompt } }) + '\n');
+        // 실제 런타임 전사 형태 — 머리말 한 줄 + 계산된 프롬프트의 모든 줄을 공백 두 칸 들여 쓴다(2026-11-24 실측)
+        const framed = '[Workflow harness — computed task] The computed task text follows:\n' + prompt.split('\n').map(l => '  ' + l).join('\n');
+        fs.writeFileSync(path.join(wfdir, `agent-rec${n}.jsonl`), JSON.stringify({ timestamp: '2026-11-24T10:00:30Z', type: 'user', message: { role: 'user', content: framed } }) + '\n');
         const m = prompt.match(/^- `(.*)`$/m);
         if (!m) return { exitCode: 99, stdout: '', stderr: 'no command line' };
-        const p = spawnSync('bash', ['-c', m[1]], { encoding: 'utf8' });
+        // mangle — 실측(2026-11-24 PR 게이트 2회)처럼 명령에 옮겨 적은 긴 값(100자 넘는 `=` 값)의 가운데 201자를 떨군다
+        const cmd = mode === 'mangle' ? m[1].replace(/=(\S{100,})/g, (_, v) => '=' + v.slice(0, 60) + v.slice(261)) : m[1];
+        const p = spawnSync('bash', ['-c', cmd], { encoding: 'utf8' });
         return { exitCode: p.status, stdout: p.stdout, stderr: p.stderr };
     }
     // lane — 실제 런타임처럼 전사(도구 실행 + 구조화 출력)를 남긴다
@@ -5935,7 +5939,9 @@ async function agent(prompt, opts) {
         row('2026-11-24T10:00:01Z', { type: 'tool_use', id: 'b' + n, name: 'Bash', input: { command: 'git diff --stat' } }),
         row('2026-11-24T10:00:05Z', { type: 'tool_use', id: 'o' + n, name: 'StructuredOutput', input: { lane: opts.label, verdict, findings: [] } }),
     ].join('\n') + '\n');
-    return { lane: opts.label, verdict, findings: [] };
+    // mangle — PR 게이트처럼 lane 결과가 수 KB 다(metrics 가 receiptLanes 의 reason 으로 간다)
+    const metrics = mode === 'mangle' ? `tsc 0 · jest 통과 · 레인 ${opts.label} 측정 요약 `.repeat(40) : undefined;
+    return { lane: opts.label, verdict, findings: [], ...(metrics ? { metrics } : {}) };
 }
 const parallel = thunks => Promise.all(thunks.map(t => t().catch(() => null)));
 const lanes = Object.keys(cls.selected || {});
@@ -5975,6 +5981,19 @@ wrjs pass
 [ "$(wrjk 'd["recorded"]["status"], "워크플로 안 기록이 되지 않았다" in d["next"] and "receipt.sh record 로 기록해라" in d["next"], "index-changed" in d["recorded"]["output"] or "인덱스" in d["recorded"]["output"]' $LINENO)" = "REFUSED True True" ] \
   && ok "WR-f: 워크플로 안 record 가 거부되면 recorded=REFUSED·거부 출력을 담고 next 가 메인 기록으로 되돌린다" \
   || ng "WR-f: 거부된 기록의 폴백 안내가 어긋난다 ($(head -c 400 "$T/wr-js.out"))" "REFUSED · 폴백 next"
+# 회귀 — 긴 lane 결과(수 KB)에서 기록 에이전트가 명령의 긴 값을 옮기다 바꿔도 기록된다. lane 결과는 명령이 아니라
+#  프롬프트의 pf-record-lanes 줄로 가고 receipt.sh 가 전사에서 읽는다(DECISIONS.md 2026-11-24 「lane 결과는 전사에서 읽는다」).
+#  2.6 형태(명령의 --lanes-b64)면 이 스텁에서 lanes-digest-mismatch 로 거부된다.
+"$CL" "$WRD/r" commit > "$WRD/r.cls.json" 2>"$T/wr-cl.err"   # 새 nonce — 위 실행들의 표식과 겹치지 않게
+rm -f "$(git -C "$WRD/r" rev-parse --absolute-git-dir)/claude-preflight.json"
+wrjs mangle
+_wrmg="$(wrjk 'd["recorded"]["status"]' $LINENO) $(wrlog $LINENO)"
+_wrrl=$(python3 -c 'import json,sys
+e=json.load(open(sys.argv[1]))["branches"]["main"]["commit"]["lanes"]; print(len(json.dumps(e, ensure_ascii=False).encode()))' \
+  "$(git -C "$WRD/r" rev-parse --absolute-git-dir)/claude-preflight.json" 2>"$T/wr-rl.err" || echo 0)
+[ "$_wrmg" = "RECORDED ('recorded', None, 'workflow')" ] && [ "$_wrrl" -gt 2000 ] \
+  && ok "WR-h: 긴 lane 결과(영수증 lanes ${_wrrl}B)를 기록 에이전트가 명령의 긴 값을 망가뜨려도 기록된다 — lanes 는 프롬프트 전사에서 읽는다" \
+  || ng "WR-h: 긴 lane 결과의 워크플로 안 기록이 실패했다 ($_wrmg lanes=${_wrrl}B $(head -c 400 "$T/wr-js.out") $(_diag "$T/py.err"))" "RECORDED · via workflow · lanes > 2000B"
 # 워크플로 쪽 base64 구현이 표준 base64 와 같은 바이트를 내는가 — 패딩 0·1·2 와 비ASCII
 { sed -n '/BEGIN classification-load/,/END classification-load/p' "$PJW"; sed -n '/BEGIN auto-record/,/END auto-record/p' "$PJW"
   cat <<'ZB'
@@ -5986,4 +6005,58 @@ ZB
 } > "$T/wr-b64.cjs"
 node "$T/wr-b64.cjs" 2>"$T/py.err" && ok "WR-g: 워크플로의 base64 가 표준 base64 와 같다 (패딩 0·1·2, 다바이트 UTF-8)" \
   || ng "WR-g: 워크플로 base64 가 표준과 다르다$(_diag "$T/py.err")" "Buffer.toString('base64') 와 같음"
+# 기록 명령의 길이는 lane 결과 크기와 무관하다 — 명령에는 sha256·표식만, base64 는 프롬프트 줄(payload)에만
+{ sed -n '/BEGIN classification-load/,/END classification-load/p' "$PJW"; sed -n '/BEGIN auto-record/,/END auto-record/p' "$PJW"
+  cat <<'ZB'
+const big = { 'code-reviewer': { status: 'PASS', reason: '긴 요약 '.repeat(800) }, 'pr-quality': { status: 'PASS' } };
+const p = autoRecordPlan({ verdict: 'PASS', engineDir: '/e', receiptLanes: big, mode: 'pr', repo: '/r', nonce: 'n1', clsSha: 'ab'.repeat(32) });
+const b64 = p.payload.replace(/^pf-record-lanes=/, '');
+const ok = !/--lanes-b64/.test(p.cmd) && p.cmd.length < 200 && !p.cmd.includes(b64.slice(0, 40))
+    && Buffer.from(b64, 'base64').toString('utf8') === JSON.stringify(big)
+    && require('crypto').createHash('sha256').update(Buffer.from(b64, 'base64')).digest('hex') === p.sha256 && p.cmd.includes(`--lanes-sha256=${p.sha256}`);
+if (!ok) { console.error(JSON.stringify({ cmdLen: p.cmd.length, cmd: p.cmd.slice(0, 300) })); process.exit(1); }
+ZB
+} > "$T/wr-cmd.cjs"
+node "$T/wr-cmd.cjs" 2>"$T/py.err" && ok "WR-j: 기록 명령에 base64 가 없고 길이가 lane 결과 크기와 무관하다 (payload 줄의 sha256 = 명령의 --lanes-sha256)" \
+  || ng "WR-j: 기록 명령에 lane 결과가 실린다$(_diag "$T/py.err")" "cmd < 200자 · --lanes-b64 없음"
+# receipt.sh — 프롬프트 payload 의 출처 규칙. 첫 user 메시지만 입력이고, 표식이 든 프롬프트·payload 줄이 하나여야 한다.
+#  인자: <wf 디렉터리> <표식> <첫 user 메시지에 실을 payload 줄|-> <에이전트 도구 호출에 실을 payload 줄|->
+wrrecp(){ python3 - "$@" <<'ZP'
+import json, os, sys
+d, mk, first, later = sys.argv[1:5]
+os.makedirs(d, exist_ok=True)
+prompt = f"전사 표식: {mk}\n- `receipt.sh record`" + (f"\n{first}" if first != '-' else '')
+# 실제 런타임 전사 형태 — 머리말 한 줄 + 모든 줄 두 칸 들여쓰기
+prompt = "[Workflow harness — computed task] The computed task text follows:\n" + "\n".join("  " + l for l in prompt.split("\n"))
+rows = [{"timestamp": "2026-11-24T10:00:08Z", "type": "user", "message": {"role": "user", "content": prompt}}]
+if later != '-':
+    rows.append({"timestamp": "2026-11-24T10:00:09Z", "message": {"content": [{"type": "tool_use", "id": "r9", "name": "Bash", "input": {"command": "echo"}}]}})
+    rows.append({"timestamp": "2026-11-24T10:00:10Z", "message": {"role": "user", "content": f"{mk}\n{later}"}})
+open(os.path.join(d, "agent-record1.jsonl"), "w").write("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n")
+ZP
+}
+"$CL" "$WRD/r" commit > "$WRD/r.cls.json" 2>"$T/wr-cl.err"
+WRL=$(python3 -c 'import json,sys; print(json.dumps({k:{"status":"PASS"} for k in json.load(open(sys.argv[1]))["selected"]}, separators=(",",":")))' "$WRD/r.cls.json")
+WRB=$(wrb64 "$WRL"); WRS=$(wrsha "$WRL")
+MK5="pf-record:eee555:0123456789abcdef"; WD5="$WRC/projects/p1/s5/subagents/workflows/wf_tx"
+wrwf "$WD5" - 1; wrrecp "$WD5" "$MK5" "pf-record-lanes=$WRB" -
+wrrec "--lanes-sha256=$WRS" "--transcripts-marker=$MK5"
+[ "$WRRC" = 0 ] && [ "$(wrlog $LINENO)" = "('recorded', None, 'workflow')" ] && [ "$(wrrcpt wf_tx $LINENO)" = "workflow workflow True" ] \
+  && ok "WR-i: --lanes-sha256 + 표식이면 기록 에이전트 프롬프트의 pf-record-lanes 줄에서 lanes 를 읽어 기록한다" \
+  || ng "WR-i: 프롬프트 payload 기록이 통과하지 못했다 (rc=$WRRC $(wrlog $LINENO) $(tail -3 "$T/wr.out" | tr '\n' ' '))" "rc=0 recorded via workflow"
+MK6="pf-record:fff666:0123456789abcdef"; WD6="$WRC/projects/p1/s6/subagents/workflows/wf_tx2"
+wrwf "$WD6" - 1; wrrecp "$WD6" "$MK6" "pf-record-lanes=$(wrb64 "$(printf '%s' "$WRL" | sed 's/PASS/PASs/')")" -
+wrrec "--lanes-sha256=$WRS" "--transcripts-marker=$MK6"; _wri1="$WRRC $(wrlog $LINENO)"
+MK7="pf-record:ggg777:0123456789abcdef"; WD7="$WRC/projects/p1/s7/subagents/workflows/wf_tx3"
+wrwf "$WD7" - 1; wrrecp "$WD7" "$MK7" - "pf-record-lanes=$WRB"
+wrrec "--lanes-sha256=$WRS" "--transcripts-marker=$MK7"; _wri2="$WRRC $(wrlog $LINENO)"
+MK8="pf-record:hhh888:0123456789abcdef"; WD8="$WRC/projects/p1/s8/subagents/workflows/wf_tx4"
+wrwf "$WD8" - 1; wrrecp "$WD8" "$MK8" "pf-record-lanes=$WRB
+pf-record-lanes=$WRB" -
+wrrec "--lanes-sha256=$WRS" "--transcripts-marker=$MK8"; _wri3="$WRRC $(wrlog $LINENO)"
+wrrec "--lanes-sha256=$WRS"; _wri4="$WRRC $(wrlog $LINENO)"
+[ "$_wri1" = "1 ('refused', 'lanes-digest-mismatch', 'workflow')" ] && [ "$_wri2" = "1 ('refused', 'lanes-payload-unresolved', 'workflow')" ] \
+  && [ "$_wri3" = "1 ('refused', 'lanes-payload-unresolved', 'workflow')" ] && [ "$_wri4" = "1 ('refused', 'lanes-digest-mismatch', None)" ] \
+  && ok "WR-i: payload sha 불일치 → lanes-digest-mismatch, 첫 user 메시지 밖의 payload·payload 두 줄 → lanes-payload-unresolved, 출처 없는 sha 만 → 거부" \
+  || ng "WR-i: 프롬프트 payload 출처 규칙이 어긋난다 (불일치: $_wri1 · 뒤 메시지: $_wri2 · 두 줄: $_wri3 · sha 만: $_wri4)" "mismatch · unresolved · unresolved · mismatch"
 # END workflow-record
