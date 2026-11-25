@@ -634,3 +634,16 @@ a=70 a_sessions=13 b=62 main=202 home=45 norepo=78 path_outside_repo=9
   줘야 한다(docs/backlog.md 「`PF_AGENTS_DIR` 설명이 …」).
 - **회귀**: `meta-test/engine.sh` — flip prepare·remeasure-prepare 의 manifest `harness` 가 flip.sh 실경로 체크아웃의 HEAD 와 같다.
 - **어디**: `eval/flip.sh`, `meta-test/engine.sh`, `docs/backlog.md`(두 항목 닫힘). `ENGINE_VERSION` 은 그대로(측정 도구 — 게이트 계약 무관).
+
+### 수정 커밋이 없으면 영향도는 측정 불가
+
+- **왜**: `profile-measure.sh` 의 영향도 축은 제목이 `FIX_RE`(conventional `fix`·`hotfix`·`revert`·`Revert "`)에 맞는 커밋만 수정 커밋으로 센다.
+  conventional 제목을 쓰지 않는 레포에서는 수정 커밋이 하나도 잡히지 않아 영향도가 0% 로 나왔고, 표에서 "미선택 뒤 결함 없음" 으로 읽혔다
+  (docs/backlog.md 「프로필 영향도가 커밋 제목 형식에 기댄다」). 같은 날 실측(같은 항목)에서 "같은 파일 재수정" 을 수정 커밋 대용으로 쓰는
+  후보는 커밋 대부분이 해당해 기각했다.
+- **무엇**: 재생한 커밋 중 수정 커밋 제목이 0개면 후보마다 `impact.measurable=false`·비율 null 로 두고 `means` 에 "0 은 수정 없음이 아니다" 를 적는다.
+  출력 최상위에 `fixCommits`(그 개수)를 싣고, 조정 근거(evidence)에도 측정 불가를 적는다. 표의 영향도 칸은 `측정 불가(수정 커밋 0)` 이고 표 아래에
+  안내 줄이 붙는다. 수정 커밋이 하나라도 있으면 지금과 같다. 생성기 스킬 문서의 축 설명에 한 줄을 더했다.
+- **회귀**: `meta-test/profile-measure.sh` PM6b — 자연어 제목 이력에서 측정 불가 표시, 수정 커밋이 있는 이력은 그대로.
+- **어디**: `profile-measure.sh`(measure·table), `skills/harness-profile/SKILL.md`, `meta-test/profile-measure.sh`, `docs/backlog.md`(닫힘).
+  `ENGINE_VERSION` 은 그대로(실측 출력에 키를 더했을 뿐 — 프로필 계약 무관).

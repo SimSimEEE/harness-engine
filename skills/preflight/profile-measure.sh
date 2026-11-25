@@ -130,6 +130,9 @@ order = [l.strip() for l in open(os.environ['LIST']) if l.strip()]
 pos = {c: j for j, c in enumerate(order)}
 files = {c: set(f for f in git('diff-tree', '--no-commit-id', '-r', '--name-only', '-z', c).split('\0') if f) for c in order}
 subj = {c: git('log', '-1', '--format=%s', c).strip() for c in order}
+# 재생한 커밋 중 수정 커밋(제목이 FIX_RE 에 맞는 커밋)이 하나도 없으면 영향도는 잴 수 없다 — 0 은 "수정이 없었다" 가 아니라
+# "제목으로 수정을 알아볼 수 없다" 다(conventional 제목을 쓰지 않는 레포). 표가 0% 를 결함 없음으로 읽히게 두지 않는다.
+nfix = sum(1 for c in order if fixre.search(subj[c]))
 def lines(c):
     t = 0
     for l in git('show', '--format=', '--numstat', c).splitlines():
@@ -169,16 +172,19 @@ for lane in AUTOFIX:
     cost = [lines(f[1]) for _, f in fk]
     rate = lambda a, b: round(a / b, 3) if b else None
     ev = (f'{cmd} @ {head[:12]} (엔진 {os.environ["ENGINE"] or "?"}) — commit 게이트 미선택 {len(sk)}/{len(rows)}; '
-          f'미선택 뒤 {k}커밋 안 수정 {len(fk)}/{len(sk)}, 선택 뒤 {len(fr)}/{len(ru)}')
+          + (f'미선택 뒤 {k}커밋 안 수정 {len(fk)}/{len(sk)}, 선택 뒤 {len(fr)}/{len(ru)}' if nfix
+             else '영향도 측정 불가(재생한 커밋 중 수정 커밋 제목 0개)'))
     cands.append({
         'id': f'force-{lane}-commit', 'lane': lane, 'modes': ['commit'],
         'axes': {
             'violationRate': {'skipped': len(sk), 'total': len(rows), 'rate': rate(len(sk), len(rows)), 'reasons': reasons,
                               'means': '강제하면 이 비율만큼 커밋 게이트에 lane 이 더 돈다 — 강제 비용'},
-            'impact': {'skippedFollowedByFix': len(fk), 'skippedRate': rate(len(fk), len(sk)),
-                       'selected': len(ru), 'selectedFollowedByFix': len(fr), 'selectedRate': rate(len(fr), len(ru)),
+            'impact': {'measurable': bool(nfix),
+                       'skippedFollowedByFix': len(fk), 'skippedRate': rate(len(fk), len(sk)) if nfix else None,
+                       'selected': len(ru), 'selectedFollowedByFix': len(fr), 'selectedRate': rate(len(fr), len(ru)) if nfix else None,
                        'examples': [{'commit': rows[i][0][:12], 'fix': f[1][:12], 'distance': f[0]} for i, f in fk[:5]],
-                       'means': f'미선택 커밋 뒤 {k}커밋 안에 같은 파일을 고친 수정 커밋이 온 비율 (선택된 커밋과 비교)'},
+                       'means': (f'미선택 커밋 뒤 {k}커밋 안에 같은 파일을 고친 수정 커밋이 온 비율 (선택된 커밋과 비교)' if nfix else
+                                 '측정 불가 — 재생한 커밋 중 제목이 fixPattern 에 맞는 수정 커밋이 0개다. 0 은 "수정 없음" 이 아니다')},
             'recoveryCost': {'fixLinesMedian': statistics.median(cost) if cost else None,
                              'fixDistanceMedian': statistics.median([f[0] for _, f in fk]) if fk else None,
                              'means': '그 수정 커밋의 변경 줄 수(numstat 추가+삭제)와 커밋 거리의 중앙값'},
@@ -189,7 +195,7 @@ for lane in AUTOFIX:
 _m = re.search(r'[:/]([^/:]+)/([^/]+?)(?:\.git)?/?$', subprocess.run(['git', '-C', repo, 'remote', 'get-url', 'origin'],
                  capture_output=True, text=True).stdout.strip())
 print(json.dumps({'repo': repo, 'origin': f'{_m.group(1)}/{_m.group(2)}' if _m else None, 'head': head, 'engineVersion': os.environ['ENGINE'] or None,
-                  'scanned': len(rows), 'requested': n, 'window': k, 'fixPattern': FIX_RE, 'command': cmd,
+                  'scanned': len(rows), 'requested': n, 'window': k, 'fixPattern': FIX_RE, 'fixCommits': nfix, 'command': cmd,
                   'categories': sorted({d['cat'] or '없음' for _, d in rows}),
                   'limits': ['커밋 게이트 재생은 --review·PR 게이트 이후 강제를 모른다 — code-reviewer 미선택은 플래그 없이 커밋했을 때의 값이다',
                              'PR 모드 후보는 내지 않는다 — 머지된 PR 의 게이트 입력(본문·base)을 이력에서 재현할 수 없다',
@@ -217,9 +223,10 @@ if appr is not None:
 print(head); print(sep)
 for c in m['candidates']:
     a = c['axes']; v, i, r = a['violationRate'], a['impact'], a['recoveryCost']
-    row = (f"| `{c['id']}` | {v['skipped']}/{v['total']} ({pct(v['rate'])}) | "
+    imp = ('측정 불가(수정 커밋 0)' if i.get('measurable') is False else
            f"{i['skippedFollowedByFix']}/{v['skipped']} ({pct(i['skippedRate'])}) / "
-           f"{i['selectedFollowedByFix']}/{i['selected']} ({pct(i['selectedRate'])}) | "
+           f"{i['selectedFollowedByFix']}/{i['selected']} ({pct(i['selectedRate'])})")
+    row = (f"| `{c['id']}` | {v['skipped']}/{v['total']} ({pct(v['rate'])}) | {imp} | "
            f"{r['fixLinesMedian'] if r['fixLinesMedian'] is not None else '—'}줄 · "
            f"{r['fixDistanceMedian'] if r['fixDistanceMedian'] is not None else '—'}커밋 | {a['autoFix'].split(' — ')[0]} |")
     if appr is not None:
@@ -227,6 +234,9 @@ for c in m['candidates']:
     print(row)
 if not m['candidates']:
     print('| (후보 없음 — 강제할 수 있는 lane 이 이미 모든 커밋에서 돈다) | | | | |' + (' |' if appr is not None else ''))
+if m.get('fixCommits') == 0 and m['candidates']:
+    print('\n영향도 측정 불가 — 재생한 커밋 중 제목이 수정 커밋 정규식에 맞는 커밋이 0개다(conventional `fix:` 제목을 쓰지 않는 레포). '
+          '영향도 0 은 "결함 없음" 이 아니다 — 위반율·복구 비용 밖의 근거로 판단해라.')
 print('\n한계: ' + ' / '.join(m['limits']))
 if m['unclassified']:
     print(f"분류 못 한 커밋 {len(m['unclassified'])}개 — 첫 사유: {m['unclassified'][0]['reason']}")
