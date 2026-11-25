@@ -156,7 +156,7 @@ if _OPT_MARKER:
 
 # CONTRACT: workflow-record-inputs
 # 워크플로 안 기록(preflight.js 기록 에이전트)의 입력. 명령에는 sha256 과 표식만 오고, lane 결과(base64)는 표식으로 찾은
-# wf 디렉터리에서 기록 에이전트 전사의 **첫 user 메시지**(런타임이 쓴 프롬프트)의 `pf-record-lanes=` 줄에서 읽는다 —
+# wf 디렉터리에서 기록 에이전트 전사의 **런타임 입력**(첫 응답 전 user 메시지 중 표식이 든 프롬프트)의 `pf-record-lanes=` 줄에서 읽는다 —
 # 모델이 수 KB 를 명령에 옮겨 적는 경로가 없다(DECISIONS.md 2026-11-24 「lane 결과는 전사에서 읽는다」). 2.6 의
 # `--lanes-b64`(모델이 옮겨 적은 base64)도 아직 받는다. 어느 쪽이든 디코드 바이트의 sha256 이 `--lanes-sha256` 과 같아야 한다.
 import base64 as _b64m, hashlib as _hlm
@@ -223,12 +223,16 @@ if _OPT_MARKER:
         sys.exit(1)
     os.environ['TRANSCRIPTS'] = _found[0]
     if _FROM_TX:
-        # 기록 에이전트 전사 = 이 디렉터리에서 첫 user 메시지에 표식이 든 전사. 첫 user 메시지만 본다 — 에이전트 자신의
-        # 도구 호출·출력(뒤 줄)에 쓴 `pf-record-lanes=` 는 입력이 아니다. 전사 하나·줄 하나일 때만 받는다.
+        # 기록 에이전트 전사 = 이 디렉터리에서 런타임 입력 중 표식이 든 user 메시지가 있는 전사. 런타임 입력은 에이전트가
+        # 처음 응답하기 전의 user 메시지들이다 — 사용자 메시지로 시작한 턴이면 런타임이 '사용자 요청 중계' 메시지를 프롬프트
+        # 앞에 하나 더 쓴다(그때 프롬프트는 두 번째 user 메시지다). 에이전트 자신의 도구 호출·출력(첫 응답 뒤 줄)에 쓴
+        # `pf-record-lanes=` 는 입력이 아니다. payload 는 표식이 든 그 메시지에서만 읽는다 — 전사 하나·메시지 하나·줄 하나일 때만 받는다.
+        # 런타임 입력은 상위 `type` 이 `user` 인 행만이다 — 첫 응답 전에도 `api-request-blob` 같은 부가 행이 role user 로 요청 사본(프롬프트 포함)을
+        # 싣는다(실측 11-25).
         # 런타임은 프롬프트 앞에 머리말 한 줄을 붙이고 모든 줄을 공백 두 칸 들여 쓴다 — 줄 머리 공백을 허용한다.
         _payloads = []
         for _f in sorted(_gm.glob(os.path.join(_gm.escape(_found[0]), 'agent-*.jsonl'))):
-            _first = None
+            _inputs = []
             try:
                 with open(_f, encoding='utf-8', errors='replace') as _fh:
                     for _ln in _fh:
@@ -237,15 +241,23 @@ if _OPT_MARKER:
                         except Exception:
                             continue
                         _m = _o.get('message') if isinstance(_o, dict) else None
-                        if isinstance(_m, dict) and _m.get('role') == 'user':
-                            _c = _m.get('content')
-                            _first = _c if isinstance(_c, str) else '\n'.join(
-                                b.get('text', '') for b in (_c or []) if isinstance(b, dict) and b.get('type') == 'text')
+                        if not isinstance(_m, dict):
+                            continue
+                        _c = _m.get('content')
+                        _blocks = _c if isinstance(_c, list) else []
+                        if _m.get('role') == 'assistant' or _o.get('type') == 'assistant' or any(
+                                isinstance(b, dict) and b.get('type') in ('tool_use', 'tool_result') for b in _blocks):
                             break
+                        # 런타임 부가 행(`api-request-blob` 등 — 요청 사본이라 프롬프트가 한 번 더 실린다)은 입력으로 세지 않는다.
+                        if _o.get('type') != 'user' or _m.get('role') != 'user':
+                            continue
+                        _inputs.append(_c if isinstance(_c, str) else '\n'.join(
+                            b.get('text', '') for b in _blocks if isinstance(b, dict) and b.get('type') == 'text'))
             except OSError:
                 continue
-            if _first and _mk in _first:
-                _payloads.append(re.findall(r'^[ \t]*pf-record-lanes=(\S*)[ \t]*$', _first, re.M))
+            for _first in _inputs:
+                if _mk in _first:
+                    _payloads.append(re.findall(r'^[ \t]*pf-record-lanes=(\S*)[ \t]*$', _first, re.M))
         if len(_payloads) != 1 or len(_payloads[0]) != 1:
             print(f"게이트 기록 거부 — 기록 에이전트 프롬프트에서 lane 결과(pf-record-lanes=)를 하나로 정하지 못했다 "
                   f"(표식이 든 프롬프트 {len(_payloads)}개, 줄 {sum(len(x) for x in _payloads)}개)")

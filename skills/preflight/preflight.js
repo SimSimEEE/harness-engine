@@ -145,7 +145,7 @@ const gateAgent = (prompt, opts) => agent(`${NO_GIT_STATE}\n${prompt}`, opts);
 // 집계가 PASS 면 메인 세션이 receiptLanes 를 파일로 옮겨 record 를 부르는 턴을 없애려고, 기록 에이전트가
 // `receipt.sh record` 한 명령을 돌린다. 워크플로 스크립트는 셸·파일 쓰기·자기 전사 경로가 없으므로:
 //   · lane 결과는 UTF-8 바이트의 base64 를 기록 에이전트 **프롬프트**의 `pf-record-lanes=` 줄에만 싣고, 명령에는 sha256 만
-//     넣는다. receipt.sh 가 표식으로 찾은 wf 디렉터리에서 기록 에이전트 전사의 첫 user 메시지(런타임이 쓴 프롬프트)를 읽어
+//     넣는다. receipt.sh 가 표식으로 찾은 wf 디렉터리에서 기록 에이전트 전사의 런타임 입력(첫 응답 전 user 메시지 중 표식이 든 프롬프트)을 읽어
 //     그 줄을 디코드하고 sha256 으로 대조한다 — 모델이 옮겨 적는 값은 sha256·표식·레포 경로뿐이다
 //     (DECISIONS.md 2026-11-24 「lane 결과는 전사에서 읽는다」).
 //   · 전사 디렉터리는 표식(marker)으로 찾게 한다 — 이 표식은 기록 에이전트의 프롬프트·명령에만 실리므로
