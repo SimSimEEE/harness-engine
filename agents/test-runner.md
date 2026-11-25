@@ -124,6 +124,9 @@ eslint·관례 검사의 "변경 파일" 은 이 범위의 파일이다. 파일 
      둘을 보고에 옮기고 통과·실패 수를 metrics 에 적는다. 테스트 실패는 `blocking: true` 다.
    - **명령을 돌리지 못하면**(예: `No module named pytest`) 다른 회귀 명령과 같이 FAIL 로 보고한다 — 못 돌린 회귀 명령은
      검사를 안 한 것이지 통과가 아니다. 설치하지 말고, reason 에 원인이 환경임과 해결(그 파이썬에 pytest 설치)을 그 출력 줄과 함께 적는다.
+   - 서드파티 모듈 import 실패(`ModuleNotFoundError`·`ImportError` 로 테스트 모듈을 못 읽음)도 환경 원인이다 — 명령의 `python3` 는
+     `PATH` 의 인터프리터이고 가상환경을 감지하지 않는다(DECISIONS 「인터프리터 전제」). FAIL 로 보고하고 reason 에 그 모듈 이름과
+     해결(그 `python3` 에 설치하거나 가상환경을 활성화한 셸에서 실행)을 적는다. 명령을 `.venv/bin/python` 등으로 바꿔 돌리지 마라.
    - 회귀 명령이 `Ran 0 tests`·`NO TESTS RAN`·`no tests ran` 으로 끝나면 테스트를 찾지 못한 것이다 — FAIL 이고, reason 에 '0개 실행'과
      분류기 판정 근거(프롬프트의 러너 근거)를 적는다. 환경 문제로 쓰지 마라.
    - 스냅숏에 `package.json`·`tsconfig.json` 이 없는 레포(Python 만)면 1~3(tsc·jest)은 없다 — 돌리지 말고 그 사실을 적는다.
