@@ -622,3 +622,15 @@ a=70 a_sessions=13 b=62 main=202 home=45 norepo=78 path_outside_repo=9
   정상이라는 한 문장을 더했다.
 - **회귀**: `meta-test/engine.sh` 변이 절의 스텁 프롬프트에서 baseline·test-runner 프롬프트가 그 문장을 싣는지 본다.
 - **어디**: `preflight.js`(BASE_HEAD_NOTE, snapshot-block), `meta-test/engine.sh`, `docs/backlog.md`(닫힘). `ENGINE_VERSION` 은 그대로(프롬프트 문구).
+
+### flip manifest 의 harness 를 엔진 체크아웃에서 잰다
+
+- **왜**: `eval/flip.sh` 의 lane 측정·재측정 manifest 는 `harness`(엔진 커밋)·`harnessDirty` 를 스크립트 디렉터리 기준 REPO 에서 쟀다. 파일 단위
+  링크·복사 설치에서는 그 자리가 설치 루트라 체크아웃이 아니어서, 커밋이 빈 문자열·변경이 false 로 남았다 — 어느 엔진으로 잰 측정인지 manifest 가
+  말하지 못했다(docs/backlog.md 「manifest 의 `harness`·`harnessDirty` 가 …」). 격리 회귀 실행도 같은 설치 형태라 빈 값이었다.
+- **무엇**: 두 구간 모두 `engine_checkout()`(PF_ENGINE_REPO, 아니면 flip.sh 실경로의 체크아웃 — 설치 루트는 제외)에서 잰다. 그 경로가 git 작업 트리의
+  최상위가 아니면 둘 다 null 이다. 재측정 구간에도 같은 함수를 두고 FLIP_FILE 을 넘긴다. 쓰지 않게 된 REPO 정의는 지웠다. 함께
+  `PF_AGENTS_DIR` 주석을 고쳤다 — 이 변수는 **해시할 자리만** 바꾸고 워크플로가 읽는 정의는 바꾸지 않으므로 세션이 실제로 읽는 agents 디렉터리를
+  줘야 한다(docs/backlog.md 「`PF_AGENTS_DIR` 설명이 …」).
+- **회귀**: `meta-test/engine.sh` — flip prepare·remeasure-prepare 의 manifest `harness` 가 flip.sh 실경로 체크아웃의 HEAD 와 같다.
+- **어디**: `eval/flip.sh`, `meta-test/engine.sh`, `docs/backlog.md`(두 항목 닫힘). `ENGINE_VERSION` 은 그대로(측정 도구 — 게이트 계약 무관).

@@ -3645,6 +3645,20 @@ for v in m['agentSources'].values():
 assert m['overrides'] is None and all(f['overrides'] is None for f in m['fixtures'].values())
 assert not any({'laneModel', 'laneEffort'} & set(json.load(open(f['args']))) for f in m['fixtures'].values())
 PY
+# manifest 의 harness 는 엔진 체크아웃의 HEAD 다 — 스크립트 디렉터리(설치 루트)에서 재면 파일 링크·복사 설치에서 빈 문자열이 된다.
+# 측정하는 flip.sh 의 실경로가 놓인 체크아웃(<root>/skills/preflight/eval/flip.sh)의 HEAD 와 같아야 한다.
+_fhh(){ python3 - "$1" "$FL" <<'ZH'
+import json, os, subprocess, sys
+m = json.load(open(os.path.join(sys.argv[1], 'manifest.json')))
+root = os.path.realpath(sys.argv[2])
+for _ in range(4): root = os.path.dirname(root)
+head = subprocess.run(['git', '-C', root, 'rev-parse', 'HEAD'], capture_output=True, text=True).stdout.strip()
+ok = bool(head) and m.get('harness') == head and ('harnessDirty' not in m or isinstance(m['harnessDirty'], bool))
+print('ok' if ok else f"harness={m.get('harness')!r} head={head!r} dirty={m.get('harnessDirty')!r}")
+ZH
+}
+_fh=$(_fhh "$FE" 2>&1)
+[ "$_fh" = ok ] && ok "flip prepare 의 manifest harness 는 엔진 체크아웃의 HEAD 다 (설치 루트가 아니다)" || ng "flip manifest 의 harness 가 체크아웃 HEAD 가 아니다 ($_fh)" "harness == 체크아웃 HEAD"
 [ "$(wc -l < "$PF_LOG" 2>/dev/null || echo 0)" = "$_pl0" ] && [ -s "$FE/pf.jsonl" ] \
   && ok "flip prepare 의 분류 라운드는 측정 디렉터리의 로그에만 남는다" || ng "flip prepare 가 관측 로그를 오염시킨다" "PF_LOG 불변, <out>/pf.jsonl 에 기록"
 bash "$FL" prepare "$FE" >/dev/null 2>&1 && ng "flip prepare 가 비어 있지 않은 디렉터리를 받는다" "exit≠0" \
@@ -5425,6 +5439,8 @@ fi
 # R14 — 채점기: ③ 결과 파일을 픽스처 기대와 대조해 일치율을 낸다
 FL="$HOME/.claude/skills/preflight/eval/flip.sh"; RF="$RM/flip"
 bash "$FL" remeasure-prepare "$RF" remeasure-same-repo-incident > "$RM/flip.prep" 2>&1; _frc=$?
+_fh=$(_fhh "$RF" 2>&1)
+[ "$_fh" = ok ] && ok "flip remeasure-prepare 의 manifest harness 도 엔진 체크아웃의 HEAD 다" || ng "재측정 manifest 의 harness 가 체크아웃 HEAD 가 아니다 ($_fh)" "harness == 체크아웃 HEAD"
 python3 - "$RF" "$RM/o-mis.json" "$RM/o-match.json" <<'PY' 2>"$T/py.err"
 import json, os, sys
 o, mis, mat = sys.argv[1:]
