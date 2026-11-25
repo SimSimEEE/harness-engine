@@ -117,7 +117,7 @@ eslint·관례 검사의 "변경 파일" 은 이 범위의 파일이다. 파일 
 
 0.8 **Python 테스트 (프롬프트의 회귀 명령 `python-tests…`)** — `.py` 로직이 바뀌고 스냅숏에 `test_*.py`·`*_test.py` 가
    있으면 분류기가 목록에 넣는다(카테고리 무관). 명령은 `cd <스냅숏> && python3 -B -m unittest discover …` 또는
-   `cd <스냅숏> && python3 -B -m pytest -q -p no:cacheprovider …` 다 — **글자 그대로** 돌린다. 플래그·패턴·따옴표를 바꾸거나 다른 러너로
+   `cd <스냅숏> && python3 -B -m pytest -q -o cache_dir=$(mktemp -d) …` 다 — **글자 그대로** 돌린다. 플래그·패턴·따옴표를 바꾸거나 다른 러너로
    바꾸지 마라(기록 단계가 전사에서 그 명령 문자열을 찾는다).
 
    - 판정은 종료 코드와 마지막 요약 줄(unittest `OK`·`FAILED (failures=N)`·`Ran N tests`, pytest `N passed`·`N failed`)로 한다.
