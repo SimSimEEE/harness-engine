@@ -4294,9 +4294,9 @@ for _cf in 'pytest.ini:[pytest]' 'pyproject.toml:[tool.pytest.ini_options]' 'set
   PY="$T/py-c"; pyrepo "$PY" tools test_m.py; printf '%s\n' "${_cf#*:}" > "$PY/${_cf%%:*}"; git -C "$PY" add -A
   _pyc3="$_pyc3$(_pyc "$(ixcl "$PY" commit)");"
 done
-_pyw="cd <스냅숏> && python3 -B -m pytest -q -p no:cacheprovider tools"
+_pyw="cd <스냅숏> && python3 -B -m pytest -q -o cache_dir=\$(mktemp -d) tools"
 [ "$_pyc3" = "$_pyw;$_pyw;$_pyw;" ] \
-  && ok "py(c): pytest 설정(pytest.ini·pyproject·setup.cfg)이 있으면 python3 -B -m pytest -q -p no:cacheprovider <dirs>" || ng "py(c): pytest 명령이 다르다 ($_pyc3)" "$_pyw ×3"
+  && ok "py(c): pytest 설정(pytest.ini·pyproject·setup.cfg)이 있으면 python3 -B -m pytest -q -o cache_dir=\$(mktemp -d) <dirs>" || ng "py(c): pytest 명령이 다르다 ($_pyc3)" "$_pyw ×3"
 # 설정 파일이 있어도 pytest 절이 없으면 unittest 다
 PY="$T/py-c2"; pyrepo "$PY" tools test_m.py; printf '[tool.black]\n' > "$PY/pyproject.toml"; git -C "$PY" add -A
 case "$(_pyc "$(ixcl "$PY" commit)")" in *"unittest discover"*) ok "py(c): pytest 절 없는 pyproject.toml 은 pytest 설정이 아니다";;
@@ -4304,18 +4304,18 @@ case "$(_pyc "$(ixcl "$PY" commit)")" in *"unittest discover"*) ok "py(c): pytes
 # pytest 인자는 조상이 이미 인자인 디렉터리를 빼고 낸다 (pytest 는 비패키지 하위도 수집)
 PY="$T/py-c3"; pyrepo "$PY" tools/sub test_s.py; mkdir -p "$PY/lib"; cp "$PY/tools/sub/test_s.py" "$PY/tools/test_t.py"; cp "$PY/tools/sub/test_s.py" "$PY/lib/test_l.py"
 printf '[pytest]\n' > "$PY/pytest.ini"; git -C "$PY" add -A
-[ "$(_pyc "$(ixcl "$PY" commit)")" = "cd <스냅숏> && python3 -B -m pytest -q -p no:cacheprovider lib tools" ] \
+[ "$(_pyc "$(ixcl "$PY" commit)")" = "cd <스냅숏> && python3 -B -m pytest -q -o cache_dir=\$(mktemp -d) lib tools" ] \
   && ok "py(c): pytest 인자에서 조상이 있는 하위 디렉터리를 뺀다" || ng "py(c): pytest 인자가 겹친다 ($(_pyc "$(ixcl "$PY" commit)"))" "pytest -q lib tools"
 # 러너 선택(_py_runner): pytest 신호(설정·conftest.py·함수형 테스트)가 하나라도 있으면 pytest — unittest discover 는 함수형을 0개로 센다.
 _pyrw(){ ixj "$1" 'd["laneMeta"]["test-runner"]["pythonTests"]["runner"] + ":" + ",".join(d["laneMeta"]["test-runner"]["pythonTests"]["why"])'; }
 _pyfn='def test_x():\n    assert 1 + 1 == 2\n'
 # (l) conftest.py + 함수형
 PY="$T/py-l"; pyrepo "$PY" tests test_m.py; printf "$_pyfn" > "$PY/tests/test_m.py"; printf '' > "$PY/conftest.py"; git -C "$PY" add -A; O=$(ixcl "$PY" commit)
-[ "$(_pyc "$O")" = "cd <스냅숏> && python3 -B -m pytest -q -p no:cacheprovider tests" ] && [ "$(_pyrw "$O")" = "pytest:conftest,function-style" ] \
+[ "$(_pyc "$O")" = "cd <스냅숏> && python3 -B -m pytest -q -o cache_dir=\$(mktemp -d) tests" ] && [ "$(_pyrw "$O")" = "pytest:conftest,function-style" ] \
   && ok "py(l): conftest.py + 함수형 테스트 → pytest (근거 conftest·function-style)" || ng "py(l): conftest 레포가 pytest 가 아니다 ($(_pyc "$O") / $(_pyrw "$O"))" "pytest -q tests, conftest,function-style"
 # (m) 설정·conftest 없이 함수형만
 PY="$T/py-m"; pyrepo "$PY" tests test_m.py; printf "$_pyfn" > "$PY/tests/test_m.py"; git -C "$PY" add -A; O=$(ixcl "$PY" commit)
-[ "$(_pyc "$O")" = "cd <스냅숏> && python3 -B -m pytest -q -p no:cacheprovider tests" ] && [ "$(_pyrw "$O")" = "pytest:function-style" ] \
+[ "$(_pyc "$O")" = "cd <스냅숏> && python3 -B -m pytest -q -o cache_dir=\$(mktemp -d) tests" ] && [ "$(_pyrw "$O")" = "pytest:function-style" ] \
   && ok "py(m): 함수형 테스트만 있으면 설정이 없어도 pytest (근거 function-style)" || ng "py(m): 함수형 테스트를 unittest 로 돌린다 ($(_pyc "$O") / $(_pyrw "$O"))" "pytest -q tests, function-style"
 # conftest.py 만 있어도(테스트는 TestCase) pytest 다
 PY="$T/py-m2"; pyrepo "$PY" tests test_m.py; printf '' > "$PY/tests/conftest.py"; git -C "$PY" add -A
@@ -4326,7 +4326,7 @@ PY="$T/py-n"; pyrepo "$PY" tools test_m.py; O=$(ixcl "$PY" commit)
   && ok "py(n): 전부 TestCase 형이고 pytest 신호가 없으면 unittest (근거 없음)" || ng "py(n): TestCase 레포의 러너가 바뀌었다 ($(_pyrw "$O"))" "unittest:"
 # (o) TestCase 와 함수형이 섞이면 pytest — unittest 로 돌리면 함수형이 빠진다
 PY="$T/py-o"; pyrepo "$PY" tools test_m.py; printf "$_pyfn" > "$PY/tools/test_f.py"; git -C "$PY" add -A; O=$(ixcl "$PY" commit)
-[ "$(_pyc "$O")" = "cd <스냅숏> && python3 -B -m pytest -q -p no:cacheprovider tools" ] && [ "$(ixj "$O" 'd["laneMeta"]["test-runner"]["pythonTests"]["functionStyle"]')" = "['tools/test_f.py']" ] \
+[ "$(_pyc "$O")" = "cd <스냅숏> && python3 -B -m pytest -q -o cache_dir=\$(mktemp -d) tools" ] && [ "$(ixj "$O" 'd["laneMeta"]["test-runner"]["pythonTests"]["functionStyle"]')" = "['tools/test_f.py']" ] \
   && ok "py(o): TestCase 와 함수형이 섞이면 pytest, 함수형 파일이 근거로 남는다" || ng "py(o): 섞인 레포에서 함수형을 놓친다 ($(_pyc "$O"))" "pytest -q tools, functionStyle [tools/test_f.py]"
 # 파일 형 판정은 구문 트리(ast)다 — import 문·주석·문자열은 근거가 아니다. _pyst <내용> → "러너:근거"
 _pyst(){ PY="$T/py-st"; pyrepo "$PY" tools test_m.py; printf '%b' "$1" > "$PY/tools/test_m.py"; git -C "$PY" add -A; _pyrw "$(ixcl "$PY" commit)"; }
@@ -4402,6 +4402,12 @@ case "$(_pyrec "$T/py-f-other" "cd /tmp/pf-snap.X && python3 -B -m unittest disc
   *) ng "py(f): 다른 명령을 확정된 Python 명령의 실행으로 센다" "refused:suite-not-run";; esac
 case "$(_pyrec "$T/py-f-run" "cd /tmp/pf-snap.X && python3 -B -m unittest discover -s tools -p 'test_*.py' 2>&1 | tail -3")" in recorded:*) ok "py(f): 확정된 Python 명령을 돌린 게이트는 기록된다";;
   *) ng "py(f): 확정된 명령을 돌렸는데 거부한다 ($(_pyrec "$T/py-f-run" "cd /tmp/pf-snap.X && python3 -B -m unittest discover -s tools -p 'test_*.py'"))" "recorded";; esac
+# (f2) pytest 명령의 캐시 폴더 치환(`$(mktemp -d)`)이 있어도 기록 단계가 실행으로 센다 — 옛 `-p no:cacheprovider` 로 돌린 것은 아니다.
+PY="$T/py-l"; ixcl "$PY" commit > "$T/py-f.json"
+case "$(_pyrec "$T/py-f2-run" 'cd /tmp/pf-snap.X && python3 -B -m pytest -q -o cache_dir=$(mktemp -d) tests 2>&1 | tail -3')" in recorded:*) ok "py(f2): 확정된 pytest 명령(캐시 폴더 치환 포함)을 돌린 게이트는 기록된다";;
+  *) ng "py(f2): 확정된 pytest 명령을 돌렸는데 거부한다 ($(_pyrec "$T/py-f2-run" 'cd /tmp/pf-snap.X && python3 -B -m pytest -q -o cache_dir=$(mktemp -d) tests'))" "recorded";; esac
+case "$(_pyrec "$T/py-f2-old" 'cd /tmp/pf-snap.X && python3 -B -m pytest -q -p no:cacheprovider tests')" in refused:suite-not-run) ok "py(f2): 캐시를 끈 옛 pytest 명령은 확정된 명령의 실행이 아니다";;
+  *) ng "py(f2): 옛 pytest 명령을 확정된 명령의 실행으로 센다" "refused:suite-not-run";; esac
 # (g) shell-tool 카테고리 suites 와 함께 — 대체가 아니라 더해진다. Python 테스트가 없으면 기존 suites 그대로다.
 PY="$T/py-g"; ixrepo "$PY"; mkdir -p "$PY/skills/preflight" "$PY/hooks" "$PY/tools"
 printf 'x\n' > "$PY/skills/preflight/meta-test.sh"; printf 'x\n' > "$PY/hooks/preflight-gate.sh"; printf 'def f():\n    return 1\n' > "$PY/skills/preflight/h.py"

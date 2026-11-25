@@ -479,7 +479,7 @@ lane 의 **보고**가 아니라 **실행 사실**을 본다 — 각 lane 이 �
 |---|---|
 | `src` 아래 `.ts/.tsx/.js` 로직 (주석·포맷만이면 제외) | `test-runner` |
 | 게이트 자신의 레포(`shell-tool` 카테고리)에서 `hooks/`·`skills/`·`agents/` 변경 | `test-runner` + 분류기가 확정한 회귀 명령(`meta-test`·`lane-contract-check`) — lane 이 고르지 않고, 기록이 전사에서 실행을 센다(`suite-not-run`) |
-| `.py` 로직 변경 (주석·공백만이면 제외) + 스냅숏에 `test_*.py`·`*_test.py` (카테고리 무관) | `test-runner` + 분류기가 확정한 Python 회귀 명령(`python-tests…` — pytest 신호(설정·`conftest.py`·구문 트리로 본 함수형/클래스형 테스트·파싱 실패)가 있으면 `python3 -B -m pytest -q -p no:cacheprovider <dirs>`, 없으면 테스트 파일이 있는 디렉터리마다 `python3 -B -m unittest discover -s <dir> [-t <가장 위 패키지의 부모>] -p <패턴>`, 상위 discover 가 이미 수집하는 디렉터리는 뺀다). 카테고리 회귀 명령에 더해지고, `suite-not-run` 으로 실행을 센다. 테스트가 없으면 지금처럼 빠진다 |
+| `.py` 로직 변경 (주석·공백만이면 제외) + 스냅숏에 `test_*.py`·`*_test.py` (카테고리 무관) | `test-runner` + 분류기가 확정한 Python 회귀 명령(`python-tests…` — pytest 신호(설정·`conftest.py`·구문 트리로 본 함수형/클래스형 테스트·파싱 실패)가 있으면 `python3 -B -m pytest -q -o cache_dir=$(mktemp -d) <dirs>`, 없으면 테스트 파일이 있는 디렉터리마다 `python3 -B -m unittest discover -s <dir> [-t <가장 위 패키지의 부모>] -p <패턴>`, 상위 discover 가 이미 수집하는 디렉터리는 뺀다). 카테고리 회귀 명령에 더해지고, `suite-not-run` 으로 실행을 센다. 테스트가 없으면 지금처럼 빠진다 |
 | **커밋 게이트 + `--review`** | `code-reviewer` — 플래그 없으면 `no-review-flag` 로 사유만 남는다 |
 | **커밋 게이트 + PR 생성 이후** | `code-reviewer` (**플래그 없이도 돈다** — 영수증의 PR 기록으로 판정, 만료 없음) |
 | **PR 게이트 + code 변경** | `code-reviewer` (**플래그 없이도 돈다** — PR 생성 시점까지를 합쳐서 본다) |

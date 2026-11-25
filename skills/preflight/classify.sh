@@ -789,10 +789,11 @@ def _python_suites():
             'test_*.py' if posixpath.basename(f).startswith('test_') else '*_test.py')
     _runner, _why, _cfg, _fn = _py_runner(_tests)
     # marker 는 명령 그 자체다 — 기록 단계(receipt.sh suite-not-run)가 전사에서 이 문자열이 명령 자리에 왔는지 센다.
+    # pytest 캐시는 실행마다 새 임시 폴더(`$(mktemp -d)`)에 쓴다 — 스냅숏에 `.pytest_cache` 를 남기지 않으면서 `cache` 픽스처를 살린다.
     if _runner == 'pytest':
         # pytest 는 비패키지 하위도 수집한다 — 조상이 이미 인자에 있는 디렉터리는 뺀다.
         _run = sorted(d for d in _dirs if not any(_py_under(a, d) for a in _dirs))
-        _mk = 'python3 -B -m pytest -q -p no:cacheprovider ' + ' '.join(shlex.quote(d) for d in _run)
+        _mk = 'python3 -B -m pytest -q -o cache_dir=$(mktemp -d) ' + ' '.join(shlex.quote(d) for d in _run)
         _out = [{'name': 'python-tests', 'marker': _mk, 'cmd': f'cd {SNAP_TOKEN} && {_mk}', 'why': _logic}]
     else:
         _out, _run = [], []

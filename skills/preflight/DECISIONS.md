@@ -502,7 +502,7 @@ a=70 a_sessions=13 b=62 main=202 home=45 norepo=78 path_outside_repo=9
   해소 불가 베이스만 있는 파일은 다른 신호가 없으면 unittest 로 남는다 — 그 베이스가 TestCase 면 discover 가 실제로 찾아 돈다(py(w)),
   TestCase 가 아니면 0개 실행으로 3.12+ 는 FAIL(exit 5), 그 전 버전은 통과한다(한계). import 문은 근거가 아니고 주석·문자열은 트리에 없다.
   모든 테스트 파일이 unittest 형이고 신호가 없을 때만 unittest 다. unittest discover 는 함수형 테스트를 0개로 센다(3.12+ exit 5 를 test-runner 가 환경
-  문제로 오진하기 쉽고, 3.12 미만은 0개로 통과) — 그래서 신호 하나로 pytest 로 기운다. pytest 면 `cd <스냅숏> && python3 -B -m pytest -q -p no:cacheprovider <dirs>`
+  문제로 오진하기 쉽고, 3.12 미만은 0개로 통과) — 그래서 신호 하나로 pytest 로 기운다. pytest 면 `cd <스냅숏> && python3 -B -m pytest -q -o cache_dir=$(mktemp -d) <dirs>`(2026-11-25 이전 `-p no:cacheprovider`)
   한 개, unittest 면 디렉터리마다 `cd <스냅숏> && python3 -B -m unittest discover -s <dir> [-t <top>] -p 'test_*.py'`(`*_test.py` 만 있으면
   `-p '*_test.py'`). 디렉터리가 패키지(`__init__.py`)면 `__init__.py` 가 이어지는 가장 위 패키지의 부모를 `-t` 로 준다(루트면 `-t .`) —
   import 이름이 패키지 경로가 된다. 다른 디렉터리 a 의 `discover -s a` 가 이미 수집하는 디렉터리(a→d 사이가 모두 패키지, 같은 패턴)는
@@ -519,7 +519,7 @@ a=70 a_sessions=13 b=62 main=202 home=45 norepo=78 path_outside_repo=9
   `tsc --noEmit` 만" 을 회귀 명령과 함께 내면, lane 이 그 문장을 따라 회귀 명령을 건너뛰고 기록이 `suite-not-run` 으로 거부된다. 그래서
   변이 하네스가 아닌 회귀 명령이 하나라도 있으면 그 문장을 내지 않는다(`tscOnly` 는 jest 기준선일 뿐이다). 분류기에서 Python 블록만
   `tscOnly` 를 안 세우는 방법은 고르지 않았다 — shell-tool 카테고리 suites 도 같은 `setdefault` 로 엔진 레포(package.json 없음)에 같은 충돌을
-  만들고, 프롬프트 한 곳에서 막으면 두 경로가 같이 닫힌다. pytest 명령은 `-B -p no:cacheprovider` 로 스냅숏에 `__pycache__`·`.pytest_cache`
+  만들고, 프롬프트 한 곳에서 막으면 두 경로가 같이 닫힌다. pytest 명령은 `-B` 와 스냅숏 밖 캐시 폴더(2026-11-25 「pytest 캐시는 실행마다 새 임시 폴더에」)로 스냅숏에 `__pycache__`·`.pytest_cache`
   를 쓰지 않는다(unittest 경로의 `-B` 와 같다).
 - **test-runner**: 회귀 명령을 글자 그대로 돌리고 종료 코드·마지막 요약 줄을 보고한다. 명령을 돌리지 못하면(예: `No module named pytest`)
   다른 회귀 명령과 같이 FAIL 이다 — reason 에 원인이 환경임과 해결(pytest 설치)을 적는다. `Ran 0 tests`·`NO TESTS RAN`·`no tests ran` 은
@@ -578,3 +578,17 @@ a=70 a_sessions=13 b=62 main=202 home=45 norepo=78 path_outside_repo=9
 - **회귀**: `meta-test/engine.sh` py(z) — `{"name":"x"}` package.json + TS 파일 + unittest 테스트가 있는 레포의 `.py` 변경에서 새 문장과
   회귀 명령이 함께 나가고 "실행 가능한 테스트가 없다" 는 나가지 않는다. py(y) 두 단언은 그대로다.
 - **어디**: `preflight.js`(test-runner 프롬프트), `meta-test/engine.sh`. `ENGINE_VERSION` 은 그대로(프롬프트 문구 — 계약·키 변화 없음).
+
+### pytest 캐시는 실행마다 새 임시 폴더에
+
+- **왜**: 2.8 의 pytest 확정 명령은 스냅숏에 `.pytest_cache` 를 쓰지 않으려고 `-p no:cacheprovider` 로 캐시 플러그인을 껐다. 그 플러그인이
+  pytest 내장 `cache` 픽스처를 제공하므로, 그 픽스처를 쓰는 테스트는 게이트에서 `fixture 'cache' not found` ERROR 로 막혔다(2.8 PR 리뷰의
+  비차단 지적). pytest 9.2.0 으로 `def test_c(cache)` 픽스처를 돌려 재현했다 — 옛 명령 `1 error`, 새 명령 `1 passed`, 두 경우 모두 테스트 폴더에
+  `.pytest_cache` 가 생기지 않았다.
+- **무엇**: 확정 명령을 `python3 -B -m pytest -q -o cache_dir=$(mktemp -d) <dirs>` 로 바꿨다. 캐시는 실행마다 새로 만든 스냅숏 밖 임시 폴더에
+  쓴다 — 스냅숏에는 아무것도 남지 않고(같은 스냅숏에서 도는 다른 회귀 명령에 섞이지 않는다), 앞 실행의 캐시 값이 테스트에 새지 않는다.
+  `-o` 는 레포 설정의 `cache_dir` 보다 우선한다. 임시 폴더는 지우지 않는다(실행마다 작은 폴더 하나 — OS 임시 폴더 정리에 맡긴다).
+- **기록 단계**: marker 가 명령 문자열 자체라 `$(mktemp -d)` 도 글자 그대로 대조한다. `receipt.sh` 는 고치지 않았다 — py(f2) 가 치환이 든 명령의
+  실행을 기록하고, 옛 `-p no:cacheprovider` 명령은 `suite-not-run` 으로 거부하는 것을 본다.
+- **어디**: `classify.sh`(pytest 명령), `meta-test/engine.sh`(py(c)·py(l)·py(m)·py(o) 기대 문자열, py(f2)), `agents/test-runner.md`, `SKILL.md`,
+  `docs/backlog.md`(닫힘 항목의 명령). `ENGINE_VERSION` 은 그대로(확정 명령 문자열만 바뀜 — 키·계약 그대로).
