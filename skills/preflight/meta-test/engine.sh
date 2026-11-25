@@ -6459,3 +6459,221 @@ wrrec "--lanes-sha256=$WRS" "--transcripts-marker=$MK10"; _wrk2="$WRRC $(wrlog $
   && ok "WR-k: 사용자 요청 중계 메시지 뒤의 프롬프트에서 payload 를 읽어 기록하고, 표식 없는 중계 메시지의 payload 는 받지 않는다" \
   || ng "WR-k: 중계 메시지가 앞에 있을 때 payload 출처가 어긋난다 (중계+프롬프트: $_wrk1 · 중계에만: $_wrk2)" "recorded · unresolved"
 # END workflow-record
+
+
+# BEGIN category-rule-hooks — 카테고리 규칙 훅이 엔진 동작으로 이어지는가(DECISIONS.md 2026-11-25 「카테고리 규칙 훅을 엔진 스위트가 직접 본다」)
+# 엔진 카테고리(shell-tool·generic)는 규칙 훅 대부분을 두지 않아, 훅을 거쳐야 드러나는 엔진 동작이 오버레이 스위트에서만 검사됐다.
+# 여기서는 테스트 전용 오버레이에 훅을 전부 둔 카테고리(fixture-hooks)와 match 만 둔 카테고리(fixture-bare)를 만들고
+# 같은 변경을 두 카테고리 레포에서 분류해 훅 값이 그대로 실리는지, 훅이 없으면 엔진 기본값으로 남는지를 본다.
+# 훅 값은 전부 fh- 로 시작한다 — 다른 경로의 값과 우연히 같아 단언이 통과하지 않게.
+# SECRET_SCAN·SECRET_SENSITIVE_EXTRA 는 「결정론 시크릿 스캔」 절(SS-a·SS-d)이 이미 오버레이 픽스처로 본다.
+# 분류기는 config.json 이 없는 엔진 사본으로 돌린다 — 설치본의 config.json(vaultDir)이 있으면 vault_dir_fallback 에 닿지 않는다.
+echo "== 카테고리 규칙 훅 → 엔진 동작 (테스트 전용 오버레이) =="
+FH="$T/cathooks"; rm -rf "$FH"; mkdir -p "$FH"
+FHE="$FH/engine"; mkdir -p "$FHE"
+for _e in "$HOME/.claude/skills/preflight"/* "$HOME/.claude/skills/preflight"/.[!.]*; do
+  [ -e "$_e" ] || continue
+  case "${_e##*/}" in config.json) continue ;; esac
+  ln -s "$_e" "$FHE/${_e##*/}"
+done
+FHO="$FH/overlay"; mkdir -p "$FHO/categories/fixture-hooks" "$FHO/categories/fixture-bare"
+printf '{"categories": ["fixture-hooks", "fixture-bare"]}\n' > "$FHO/categories/categories.json"
+for _c in fixture-hooks fixture-bare; do printf '{"procedures": [{"id": "x", "text": "x"}]}\n' > "$FHO/categories/$_c/procedures.json"; done
+cat > "$FHO/categories/fixture-bare/rules.py" <<'PYR'
+def match(ctx):
+    return ['.fixture-bare'] if ctx.snap_has('.fixture-bare') else []
+PYR
+cat > "$FHO/categories/fixture-hooks/rules.py" <<'PYR'
+import os
+
+
+def match(ctx):
+    return ['.fixture-hooks'] if ctx.snap_has('.fixture-hooks') else []
+
+
+def vault_docs(ctx, files):
+    return [f for f in files if f.startswith('fh-notes/') and f.endswith('.md')]
+
+
+ALL_MODE_FORCED = ('vault-linter',)
+DEP_KEY_EXTRA = (r'^[+-]\s*"fh-dep-marker"',)
+
+
+def convention(ctx, lane):
+    return {'fhConvention': 'fh-conv-' + lane}
+
+
+def vault_dir_fallback(ctx):
+    p = ctx.root / '.fh-vault-path'
+    return p.read_text().strip() if p.is_file() else ''
+
+
+def vault_link(ctx):
+    vd = ctx.vault_dir()
+    if not vd:
+        return {'status': 'UNKNOWN', 'lookup': 'UNRESOLVED', 'reason': 'fh-vault-unresolved'}
+    src = {'mode': 'worktree', 'vaultDir': vd}
+    note = 'fh-projects/fh-note.md'
+    if os.path.isfile(os.path.join(vd, note)):
+        return {'status': 'REGISTERED', 'repo': 'fh/fixture', 'note': note, 'source': src}
+    return {'status': 'UNREGISTERED', 'repo': 'fh/fixture', 'source': src, 'reason': 'fh-not-registered'}
+
+
+VAULT_SYNC = True
+
+
+def qa_meta(ctx):
+    return {'devBaseUrl': 'http://fh-qa.invalid/base', 'fhQaKey': 'fh-qa-value'}
+
+
+QA_HINT = {'commit': 'fh-qa-hint-commit', 'pr': 'fh-qa-hint-pr'}
+
+
+def suites(ctx, changed):
+    trig = [f for f in changed if f.startswith('fh-suite/')]
+    return ([{'name': 'fh-suite', 'marker': 'run.sh', 'cmd': f'bash {ctx.snap_token}/fh-suite/run.sh', 'why': trig}]
+            if trig else [])
+PYR
+# vault 픽스처 둘 — 등록 노트가 있는 곳과 빈 곳. 로컬 디렉터리뿐이다(조회는 픽스처 규칙이 파일 존재로 한다).
+FHVR="$FH/vault-reg"; FHVE="$FH/vault-empty"; mkdir -p "$FHVR/fh-projects" "$FHVE"; printf 'note\n' > "$FHVR/fh-projects/fh-note.md"
+# fhrepo <디렉터리> <hooks|bare> — 표식 파일을 커밋하고 origin/main 을 그 커밋에 둔다(PR 모드의 base).
+fhrepo(){ ixrepo "$1"; printf 'base\n' > "$1/a.txt"; : > "$1/.fixture-$2"
+  [ -z "${3:-}" ] || printf '{\n  "name": "fh",\n  "fh-dep-marker": "1"\n}\n' > "$1/package.json"
+  git -C "$1" add -A; git -C "$1" "$G" -qm init; git -C "$1" update-ref refs/remotes/origin/main HEAD; }
+# fhcl <디렉터리> <모드·플래그...> — 결과는 <디렉터리>.json. VAULT_DIR 은 FHV 로만 준다(비우면 미설정).
+fhcl(){ local d="$1"; shift
+  env -u VAULT_DIR ${FHV:+VAULT_DIR="$FHV"} PF_OVERLAY_DIR="$FHO" "$FHE/classify.sh" "$d" "$@" > "$d.json" 2>"$T/fh-cl.err"; }
+fhj(){ python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print($2)" "$1" 2>"$T/py.err"; _pytb "$3"; }
+fhpr(){ git -C "$1" checkout -q -b feat; git -C "$1" add -A; git -C "$1" -c core.hooksPath=/dev/null "$G" -qm change; }
+
+# CH-a vault_docs — 규칙이 고른 문서만 vault-linter 대상이다. 규칙 밖의 .md 는 빠진다.
+for _k in hooks bare; do fhrepo "$FH/a-$_k" "$_k"; mkdir -p "$FH/a-$_k/fh-notes" "$FH/a-$_k/docs"
+  printf 'n\n' > "$FH/a-$_k/fh-notes/n.md"; printf 'd\n' > "$FH/a-$_k/docs/d.md"; git -C "$FH/a-$_k" add -A; fhcl "$FH/a-$_k" commit; done
+_cha=$(fhj "$FH/a-hooks.json" 'd["category"], d["selected"].get("vault-linter"), d["files"]["vault"]' $LINENO)
+[ "$_cha" = "fixture-hooks ['fh-notes/n.md'] ['fh-notes/n.md']" ] \
+  && ok "CH-a: vault_docs 가 고른 문서(fh-notes/*.md)만 vault-linter 대상·files.vault 가 된다 (docs/*.md 는 빠진다)" \
+  || ng "CH-a: vault_docs 결과가 lane 선택에 안 실린다 ($_cha)$(_diag "$T/fh-cl.err")" "fixture-hooks ['fh-notes/n.md'] ['fh-notes/n.md']"
+_cha=$(fhj "$FH/a-bare.json" 'd["category"], d["notSelected"].get("vault-linter"), d["files"]["vault"]' $LINENO)
+[ "$_cha" = "fixture-bare no-vault-doc-change []" ] \
+  && ok "CH-a: vault_docs 가 없는 카테고리는 같은 변경에서 vault-linter 를 고르지 않는다 (no-vault-doc-change)" \
+  || ng "CH-a: 규칙 없는 카테고리에서 vault 문서가 잡혔다 ($_cha)" "fixture-bare no-vault-doc-change []"
+
+# CH-b ALL_MODE_FORCED — mode=all 은 카테고리가 더한 lane 도 대상 없이 강제한다.
+for _k in hooks bare; do fhrepo "$FH/b-$_k" "$_k"; printf 'more\n' >> "$FH/b-$_k/a.txt"; git -C "$FH/b-$_k" add -A; fhcl "$FH/b-$_k" all; done
+_chb=$(fhj "$FH/b-hooks.json" '"vault-linter" in d["selected"], d["laneMeta"].get("vault-linter", {}).get("forcedBy")' $LINENO)
+[ "$_chb" = "True mode=all (원래 사유: no-vault-doc-change)" ] \
+  && ok "CH-b: ALL_MODE_FORCED 의 lane(vault-linter)이 mode=all 에서 원래 사유와 함께 강제된다" \
+  || ng "CH-b: ALL_MODE_FORCED 가 강제 목록에 안 들어갔다 ($_chb)$(_diag "$T/fh-cl.err")" "True mode=all (원래 사유: no-vault-doc-change)"
+_chb=$(fhj "$FH/b-bare.json" '"vault-linter" in d["selected"], d["notSelected"].get("vault-linter")' $LINENO)
+[ "$_chb" = "False no-vault-doc-change" ] \
+  && ok "CH-b: ALL_MODE_FORCED 가 없으면 mode=all 도 vault-linter 를 강제하지 않는다" \
+  || ng "CH-b: 규칙 없는 카테고리에서 vault-linter 가 강제됐다 ($_chb)" "False no-vault-doc-change"
+
+# CH-c DEP_KEY_EXTRA — package.json 의 카테고리 키 줄만 바뀐 변경이 타입/의존성 파일이 된다.
+for _k in hooks bare; do fhrepo "$FH/c-$_k" "$_k" pkg; sed -i.bak 's/"fh-dep-marker": "1"/"fh-dep-marker": "2"/' "$FH/c-$_k/package.json"
+  rm -f "$FH/c-$_k/package.json.bak"; git -C "$FH/c-$_k" add -A; fhcl "$FH/c-$_k" commit; done
+_chc="$(fhj "$FH/c-hooks.json" 'd["files"]["all"], d["files"]["types"]' $LINENO) / $(fhj "$FH/c-bare.json" 'd["files"]["all"], d["files"]["types"]' $LINENO)"
+[ "$_chc" = "['package.json'] ['package.json'] / ['package.json'] []" ] \
+  && ok "CH-c: DEP_KEY_EXTRA 줄 패턴이 맞는 package.json 변경은 files.types 에 들고, 규칙이 없으면 같은 변경이 빠진다" \
+  || ng "CH-c: DEP_KEY_EXTRA 가 의존성 판정에 안 더해진다 ($_chc)$(_diag "$T/fh-cl.err")" "['package.json'] ['package.json'] / ['package.json'] []"
+
+# CH-d convention — code-reviewer·test-runner 가 같은 규칙 값을 받고, 규칙이 없으면 conventionScope 사유가 남는다.
+for _k in hooks bare; do fhrepo "$FH/d-$_k" "$_k"; printf 'module.exports = 1;\n' > "$FH/d-$_k/x.js"; git -C "$FH/d-$_k" add -A; fhcl "$FH/d-$_k" commit --review; done
+_chd=$(fhj "$FH/d-hooks.json" '[(l, m.get("fhConvention"), "conventionScope" in m) for l in ("code-reviewer", "test-runner") for m in [d["laneMeta"].get(l, {})]]' $LINENO)
+[ "$_chd" = "[('code-reviewer', 'fh-conv-code-reviewer', False), ('test-runner', 'fh-conv-test-runner', False)]" ] \
+  && ok "CH-d: convention(ctx, lane) 값이 code-reviewer·test-runner laneMeta 에 lane 별로 실리고 conventionScope 는 없다" \
+  || ng "CH-d: convention 값이 laneMeta 에 안 실린다 ($_chd)$(_diag "$T/fh-cl.err")" "fh-conv-code-reviewer · fh-conv-test-runner · conventionScope 없음"
+_chd=$(fhj "$FH/d-bare.json" '[d["laneMeta"].get(l, {}).get("conventionScope", "").startswith("category-not-applicable — 사내 관례 판정") for l in ("code-reviewer", "test-runner")], [k for l in ("code-reviewer", "test-runner") for k in d["laneMeta"].get(l, {}) if k.startswith("fh")]' $LINENO)
+[ "$_chd" = "[True, True] []" ] \
+  && ok "CH-d: convention 이 없으면 두 lane 모두 conventionScope 에 카테고리 비해당 사유가 남는다" \
+  || ng "CH-d: 규칙 없는 카테고리의 관례 사유가 어긋난다 ($_chd)" "[True, True] []"
+
+# CH-e vault_link · vault_dir_fallback — 등록 판정은 규칙 결과 그대로 vaultLink 가 되고, vault 위치는
+#  VAULT_DIR(그리고 config.json) 다음에야 규칙의 폴백을 쓴다. 폴백은 레포 안 비추적 파일(.fh-vault-path)로 준다.
+for _k in hooks bare; do fhrepo "$FH/e-$_k" "$_k"; printf 'more\n' >> "$FH/e-$_k/a.txt"; git -C "$FH/e-$_k" add -A; done
+FHV="$FHVR" fhcl "$FH/e-hooks" commit
+_che=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); v=d['vaultLink']; print(v['status'], v.get('note'), v.get('source', {}).get('vaultDir') == sys.argv[2])" "$FH/e-hooks.json" "$FHVR" 2>"$T/py.err"); _pytb $LINENO
+[ "$_che" = "REGISTERED fh-projects/fh-note.md True" ] \
+  && ok "CH-e: vault_link 결과(REGISTERED·note·source)가 vaultLink 로 그대로 나간다 (VAULT_DIR 의 vault)" \
+  || ng "CH-e: vault_link 결과가 vaultLink 에 안 실린다 ($_che)$(_diag "$T/fh-cl.err")" "REGISTERED fh-projects/fh-note.md True"
+FHV="$FHVR" fhcl "$FH/e-bare" commit
+_che=$(fhj "$FH/e-bare.json" 'd["vaultLink"]["status"], d["vaultLink"]["reason"].startswith("category-not-applicable — vault 등록 조회")' $LINENO)
+[ "$_che" = "NOT_APPLICABLE True" ] \
+  && ok "CH-e: vault_link 가 없으면 VAULT_DIR 이 있어도 조회하지 않고 NOT_APPLICABLE(카테고리 비해당)이다" \
+  || ng "CH-e: 규칙 없는 카테고리에서 등록 조회가 돌았다 ($_che)" "NOT_APPLICABLE True"
+printf '%s\n' "$FHVR" > "$FH/e-hooks/.fh-vault-path"
+FHV="" fhcl "$FH/e-hooks" commit
+_che=$(python3 -c "import json,sys; v=json.load(open(sys.argv[1]))['vaultLink']; print(v['status'], v.get('source', {}).get('vaultDir') == sys.argv[2])" "$FH/e-hooks.json" "$FHVR" 2>"$T/py.err"); _pytb $LINENO
+[ "$_che" = "REGISTERED True" ] \
+  && ok "CH-e: VAULT_DIR·config.json 이 없으면 vault_dir_fallback 의 위치로 vault 를 정한다 (ctx.vault_dir)" \
+  || ng "CH-e: vault_dir_fallback 이 vault 위치로 안 쓰인다 ($_che)$(_diag "$T/fh-cl.err")" "REGISTERED True"
+FHV="$FHVE" fhcl "$FH/e-hooks" commit
+_che=$(python3 -c "import json,sys; v=json.load(open(sys.argv[1]))['vaultLink']; print(v['status'], v.get('reason'), v.get('source', {}).get('vaultDir') == sys.argv[2])" "$FH/e-hooks.json" "$FHVE" 2>"$T/py.err"); _pytb $LINENO
+[ "$_che" = "UNREGISTERED fh-not-registered True" ] \
+  && ok "CH-e: VAULT_DIR 이 있으면 폴백보다 앞선다 (빈 vault → UNREGISTERED)" \
+  || ng "CH-e: VAULT_DIR 보다 폴백이 먼저 쓰였다 ($_che)" "UNREGISTERED fh-not-registered True"
+rm -f "$FH/e-hooks/.fh-vault-path"; FHV="" fhcl "$FH/e-hooks" commit
+_che=$(fhj "$FH/e-hooks.json" 'd["vaultLink"]["status"], d["vaultLink"].get("reason")' $LINENO)
+[ "$_che" = "UNKNOWN fh-vault-unresolved" ] \
+  && ok "CH-e: 폴백도 빈 값이면 vault 위치가 없다 — 위 위치가 폴백에서 왔다는 대조" \
+  || ng "CH-e: 폴백 없이도 vault 위치가 정해졌다 ($_che)" "UNKNOWN fh-vault-unresolved"
+
+# CH-f VAULT_SYNC — PR 게이트의 vault-sync 선택은 규칙이 있을 때만, 등록 판정을 따른다. 미등록이면 기록도 막힌다.
+fhrepo "$FH/f-hooks" hooks; printf 'more\n' >> "$FH/f-hooks/a.txt"; fhpr "$FH/f-hooks"
+fhrepo "$FH/f-bare" bare; printf 'more\n' >> "$FH/f-bare/a.txt"; fhpr "$FH/f-bare"
+FHV="$FHVR" fhcl "$FH/f-hooks" pr
+_chf=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d['selected'].get('vault-sync'), d['laneMeta'].get('vault-sync', {}).get('vaultSource', {}).get('vaultDir') == sys.argv[2])" "$FH/f-hooks.json" "$FHVR" 2>"$T/py.err"); _pytb $LINENO
+[ "$_chf" = "['fh-projects/fh-note.md'] True" ] \
+  && ok "CH-f: VAULT_SYNC + 등록됨 → PR 게이트가 vault-sync 를 규칙의 노트로 고르고 vaultSource 를 넘긴다" \
+  || ng "CH-f: VAULT_SYNC 카테고리에서 vault-sync 가 안 골라졌다 ($_chf)$(_diag "$T/fh-cl.err")" "['fh-projects/fh-note.md'] True"
+FHV="$FHVE" fhcl "$FH/f-hooks" pr
+_chf=$(fhj "$FH/f-hooks.json" '"vault-sync" in d["selected"], d["notSelected"].get("vault-sync")' $LINENO)
+[ "$_chf" = "False UNREGISTERED: fh-not-registered" ] \
+  && ok "CH-f: VAULT_SYNC + 미등록 → vault-sync 는 규칙의 상태·사유로 미선택" \
+  || ng "CH-f: 미등록 사유가 어긋난다 ($_chf)" "False UNREGISTERED: fh-not-registered"
+rm -f "$T/fh-rec.jsonl"
+PF_LOG="$T/fh-rec.jsonl" "$FHE/receipt.sh" record pr "$FH/f-hooks" '{"secret-scanner":"PASS","pr-quality":"PASS"}' > "$T/fh-rec.out" 2>&1; _chfrc=$?
+_chf=$(python3 -c 'import json,sys; L=[json.loads(l) for l in open(sys.argv[1]) if l.strip()]; r=[e for e in L if e.get("event")=="record"]; print((r[-1].get("outcome"), r[-1].get("reason"), r[-1].get("repoSlug")) if r else ("none", None, None))' "$T/fh-rec.jsonl" 2>"$T/py.err"); _pytb $LINENO
+[ "$_chfrc" != 0 ] && [ "$_chf" = "('refused', 'vault-unregistered', 'fh/fixture')" ] \
+  && ok "CH-f: vault_link 가 UNREGISTERED 면 PR 게이트 기록이 vault-unregistered 로 거부된다 (repo 는 규칙 값)" \
+  || ng "CH-f: 미등록 레포의 PR 기록이 거부되지 않았다 (rc=$_chfrc $_chf)$(_diag "$T/fh-rec.out")" "('refused', 'vault-unregistered', 'fh/fixture')"
+FHV="$FHVR" fhcl "$FH/f-bare" pr
+_chf=$(fhj "$FH/f-bare.json" '"vault-sync" in d["selected"], d["notSelected"].get("vault-sync", "").startswith("category-not-applicable — vault-sync 선택")' $LINENO)
+[ "$_chf" = "False True" ] \
+  && ok "CH-f: VAULT_SYNC 가 없으면 PR 게이트도 vault-sync 를 고르지 않는다 (카테고리 비해당)" \
+  || ng "CH-f: 규칙 없는 카테고리에서 vault-sync 사유가 어긋난다 ($_chf)" "False True"
+
+# CH-g qa_meta — --qa 의 QA lane 메타에 규칙 값이 더해지고, 등록된 레포면 노트(repoNote)가 실린다.
+for _k in hooks bare; do fhrepo "$FH/g-$_k" "$_k"; printf 'module.exports = 2;\n' > "$FH/g-$_k/x.js"; git -C "$FH/g-$_k" add -A; FHV="$FHVR" fhcl "$FH/g-$_k" commit --qa; done
+_chg=$(fhj "$FH/g-hooks.json" '[(m.get("devBaseUrl"), m.get("fhQaKey"), m.get("repoNote")) for l in ("qa-runner", "qa-reviewer") for m in [d["laneMeta"].get(l, {})]]' $LINENO)
+[ "$_chg" = "[('http://fh-qa.invalid/base', 'fh-qa-value', 'fh-projects/fh-note.md'), ('http://fh-qa.invalid/base', 'fh-qa-value', 'fh-projects/fh-note.md')]" ] \
+  && ok "CH-g: qa_meta 값(devBaseUrl 등)과 등록 노트(repoNote)가 qa-runner·qa-reviewer laneMeta 에 실린다" \
+  || ng "CH-g: qa_meta·repoNote 가 QA 메타에 안 실린다 ($_chg)$(_diag "$T/fh-cl.err")" "fh-qa 값 · repoNote 두 lane 모두"
+_chg=$(fhj "$FH/g-bare.json" '"qa-runner" in d["selected"], [k for k in ("devBaseUrl", "fhQaKey", "repoNote") if k in d["laneMeta"].get("qa-runner", {})]' $LINENO)
+[ "$_chg" = "True []" ] \
+  && ok "CH-g: qa_meta·vault_link 가 없으면 QA 는 돌되 devBaseUrl·repoNote 를 싣지 않는다" \
+  || ng "CH-g: 규칙 없는 카테고리의 QA 메타가 어긋난다 ($_chg)" "True []"
+
+# CH-h QA_HINT — --qa 없이 코드가 바뀐 분류의 qa 사유. 커밋 게이트·PR 게이트가 각자의 키를 쓴다.
+for _k in hooks bare; do fhrepo "$FH/h-$_k" "$_k"; printf 'module.exports = 3;\n' > "$FH/h-$_k/x.js"; git -C "$FH/h-$_k" add -A
+  fhcl "$FH/h-$_k" commit; cp "$FH/h-$_k.json" "$FH/h-$_k.commit.json"; fhpr "$FH/h-$_k"; fhcl "$FH/h-$_k" pr; done
+_chh="$(fhj "$FH/h-hooks.commit.json" 'd["notSelected"].get("qa-runner"), d["notSelected"].get("qa-reviewer")' $LINENO) / $(fhj "$FH/h-hooks.json" 'd["notSelected"].get("qa-runner"), d["notSelected"].get("qa-reviewer")' $LINENO)"
+[ "$_chh" = "fh-qa-hint-commit fh-qa-hint-commit / fh-qa-hint-pr fh-qa-hint-pr" ] \
+  && ok "CH-h: QA_HINT 의 commit·pr 문구가 각 게이트의 qa-runner·qa-reviewer 사유가 된다" \
+  || ng "CH-h: QA_HINT 문구가 qa 사유에 안 실린다 ($_chh)$(_diag "$T/fh-cl.err")" "fh-qa-hint-commit ×2 / fh-qa-hint-pr ×2"
+_chh="$(fhj "$FH/h-bare.commit.json" 'd["notSelected"].get("qa-runner", "").startswith("category-not-applicable — dev 배포 안내")' $LINENO) $(fhj "$FH/h-bare.json" 'd["notSelected"].get("qa-runner", "").startswith("category-not-applicable — dev 배포 안내")' $LINENO)"
+[ "$_chh" = "True True" ] \
+  && ok "CH-h: QA_HINT 가 없으면 두 게이트 모두 카테고리 비해당 사유가 남는다" \
+  || ng "CH-h: 규칙 없는 카테고리의 qa 사유가 어긋난다 ($_chh)" "True True"
+
+# CH-i suites — 카테고리 회귀 명령이 test-runner 를 고르고 명령이 laneMeta 에 실린다(코드 변경이 없어도).
+for _k in hooks bare; do fhrepo "$FH/i-$_k" "$_k"; mkdir -p "$FH/i-$_k/fh-suite"; printf 'x\n' > "$FH/i-$_k/fh-suite/data.txt"; git -C "$FH/i-$_k" add -A; fhcl "$FH/i-$_k" commit; done
+_chi=$(fhj "$FH/i-hooks.json" 'd["selected"].get("test-runner"), [s["cmd"] for s in d["laneMeta"].get("test-runner", {}).get("suites", [])]' $LINENO)
+[ "$_chi" = "['fh-suite/data.txt'] ['bash <스냅숏>/fh-suite/run.sh']" ] \
+  && ok "CH-i: suites 결과가 test-runner 선택(why 파일)과 laneMeta.test-runner.suites 명령이 된다" \
+  || ng "CH-i: 카테고리 suites 가 test-runner 에 안 실린다 ($_chi)$(_diag "$T/fh-cl.err")" "['fh-suite/data.txt'] ['bash <스냅숏>/fh-suite/run.sh']"
+_chi=$(fhj "$FH/i-bare.json" '"test-runner" in d["selected"], d["notSelected"].get("test-runner"), "suites" in d["laneMeta"].get("test-runner", {})' $LINENO)
+[ "$_chi" = "False no-code-change False" ] \
+  && ok "CH-i: suites 가 없으면 같은 변경에서 test-runner 는 no-code-change 로 남는다" \
+  || ng "CH-i: 규칙 없는 카테고리에서 회귀 명령이 붙었다 ($_chi)" "False no-code-change False"
+# END category-rule-hooks
