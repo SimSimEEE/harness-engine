@@ -641,7 +641,8 @@ function snapshotBlock(s) {
         return `**검사 대상 내용은 스냅숏 \`${s.path}\` 다** (트리 ${s.tree.slice(0, 12)} — 커밋될 내용 그대로).\n` +
             `파일 내용은 이 경로에서 읽고, 명령은 \`cd ${s.path}\` 한 뒤 여기서 돌려라. ` +
             `원본 레포 \`${s.repo}\` 의 파일은 읽지 마라 — 커밋되지 않을 변경이 섞여 있다. ` +
-            `이 스냅숏은 게이트가 만들고 지운다 — 만들거나 지우거나 다른 체크아웃을 꾸리지 마라.\n` + range;
+            `이 스냅숏은 게이트가 만들고 지운다 — 만들거나 지우거나 다른 체크아웃을 꾸리지 마라. ` +
+            `체크아웃의 HEAD 는 스냅숏 커밋이라 원본 레포의 커밋 해시와 다르다 — 정상이다(내용은 위 트리다).\n` + range;
     return `**검사 대상 내용은 트리 \`${s.tree}\` 다** (커밋될 내용 그대로). ` +
         `파일 내용은 \`git -C ${s.repo} show ${s.tree}:<경로>\` 로 읽어라 — 원본 워킹트리의 파일을 읽지 마라(커밋되지 않을 변경이 섞여 있다).\n` + range;
 }
@@ -1035,6 +1036,12 @@ let baseline = args?.baseline
 // 기준선은 **test-runner 만** 쓴다. 여기서 await 하면 Gate 전체가 1분 24초 막히고
 // 그동안 secret-scanner(21초)가 대기한다. 띄워만 두고 test-runner lane 안에서 기다린다.
 let baselinePromise = null;
+// 스냅숏 체크아웃의 HEAD 는 snapshot.sh 가 commit-tree 로 만든 커밋이라 기준 커밋 해시와 늘 다르다. 내용(트리)은 기준 커밋의 것이고
+// snapshot.sh 가 체크아웃 트리와 대조한다. 이 사실을 모르면 lane 이 HEAD 를 비교해 기준선을 버리고 기존 실패를 새로 깨진 것으로 올린다
+// (docs/backlog.md 「기준선 체크아웃의 HEAD 가 …」 — 실제 게이트에서도 기준선 미실행·"확인 필요" 로 나왔다).
+const BASE_HEAD_NOTE = `기준선 체크아웃의 HEAD 해시는 기준 커밋과 **다른 것이 정상이다** — snapshot.sh 가 만든 스냅숏 커밋이고, 내용은 기준 커밋의 트리` +
+    (snaps.baseline?.tree ? ` ${String(snaps.baseline.tree).slice(0, 12)}` : '') +
+    ` 이며 snapshot.sh 가 체크아웃 트리와 대조했다. HEAD 해시가 다르다는 이유로 기준선을 버리거나 의심하지 마라.\n`;
 if (!baseline && selected['test-runner'] && !snaps.baseline) {
     // 기준선을 잴 체크아웃이 없다 — package.json 이 없는 레포(tsc/jest 대상 아님)이거나 만들지 못했다.
     baseline = { metrics: SNAP?.baseline ? `기준선 체크아웃을 만들지 못했다 (${snapError ?? '사유 미상'})`
@@ -1044,6 +1051,7 @@ if (!baseline && selected['test-runner']) {
     phase('Baseline');
     baselinePromise = gateAgent(
         `기준선 체크아웃 \`${snaps.baseline?.path}\` (레포 ${repo} 의 기준 커밋 ${SNAP?.baseline}) 에서 tsc/jest 를 실행해 기준선 수치만 기록해라.\n` +
+            BASE_HEAD_NOTE +
             `그 체크아웃은 게이트가 만들고 지운다 — 만들거나 지우거나 다른 체크아웃을 꾸리지 마라. 원본 레포의 워킹트리는 건드리지 마라.\n` +
             `판정이 아니라 숫자 기록이 목적이다. verdict 는 항상 PASS, findings 는 빈 배열로 두고 metrics 에만 수치를 넣어라.\n` +
             `**lane 에는 정확히 "baseline" 을 넣어라.** 다른 값은 스키마가 거절한다.`,
@@ -1337,7 +1345,7 @@ async function runGateLane(lane) {
             laneMetaBlock(lane) +
             (lane === 'test-runner'
                 ? baseline?.metrics
-                    ? `기준선: ${baseline.metrics}\n`
+                    ? `기준선: ${baseline.metrics}\n` + (snaps.baseline ? BASE_HEAD_NOTE : '')
                     : `**기준선 수집에 실패했다.** 회귀 판정의 근거가 없다 — merge-base 기준선을 네가 직접 잡거나, ` +
                       `못 잡으면 그 사실을 findings 에 남기고 기존 실패를 "새로 깨진 것" 으로 올리지 마라.\n`
                 : '') +

@@ -4609,6 +4609,13 @@ printf 'export const a = 3;\n' > "$IX/src/a.ts"; git -C "$IX" add -A; O=$(ixcl "
 git -C "$IX" remote remove origin; O=$(ixcl "$IX" commit)
 [ "$(ixj "$O" 'd["snapshot"]["baseline"]')" = "$(git -C "$IX" rev-parse HEAD)" ] \
   && ok "base 를 못 구하면 기준선은 HEAD 다" || ng "base 없을 때 기준선이 HEAD 가 아니다 ($(ixj "$O" 'd["snapshot"]["baseline"]'))" "HEAD"
+# 스냅숏 체크아웃의 HEAD 는 snapshot.sh 의 commit-tree 커밋이라 기준 커밋과 해시가 다르다 — 기준선 수집·test-runner 프롬프트가 그것이 정상임을
+# 알려야 lane 이 HEAD 비교로 기준선을 버리지 않는다(docs/backlog.md 「기준선 체크아웃의 HEAD 가 …」). 기준선이 있는 위 분류로 프롬프트를 뽑는다.
+printf '%s' "$O" > "$T/snbl.json"
+_bhp=$(node "$T/stub-prompts.cjs" "$PJ" "$T/snbl.json" 2>"$T/bh.err" | python3 -c 'import json,sys; p=json.load(sys.stdin); w="기준선 체크아웃의 HEAD 해시는 기준 커밋과 **다른 것이 정상이다**"; print(w in p.get("baseline",""), w in p.get("test-runner",""), "기준선을 버리거나 의심하지 마라" in p.get("baseline",""))' 2>>"$T/bh.err")
+[ "$_bhp" = "True True True" ] \
+  && ok "기준선 수집·test-runner 프롬프트는 스냅숏 체크아웃의 HEAD 해시가 기준 커밋과 다른 것이 정상이라고 알린다" \
+  || ng "스냅숏 HEAD 안내가 프롬프트에 없다 ($_bhp)$(_diag "$T/bh.err")" "True True True"
 
 # R7 — 프롬프트는 lane 마다 스냅숏을 내용 출처·cwd 로 준다.
 sed -n '/BEGIN snapshot-block/,/END snapshot-block/p' "$_PJS" > "$T/snb.js"
@@ -4619,7 +4626,7 @@ const n = snapshotBlock({ repo: '/r/x', tree: t, path: null, from: 'b'.repeat(40
 const ok = w.includes('`/tmp/pf-snap.Ab12`') && w.includes('cd /tmp/pf-snap.Ab12') && !w.includes('cd /r/x')
   && w.includes(`git -C /r/x diff ${'b'.repeat(40)} ${t}`) && w.includes('검사 범위는')
   && n.includes(`git -C /r/x show ${t}:`) && n.includes(`diff ${'b'.repeat(40)} ${t}`) && !/cd \/r\/x/.test(n)
-  && snapshotBlock(null) === '';
+  && w.includes('원본 레포의 커밋 해시와 다르다') && snapshotBlock(null) === '';
 process.exit(ok ? 0 : 1);
 JS
 node "$T/snb.js" 2>"$T/py.err" && ok "스냅숏 블록이 체크아웃 경로(또는 트리 참조)를 내용 출처·cwd 로 준다" || ng "스냅숏 블록이 원본을 출처로 준다$(_diag "$T/py.err")" "경로·트리 참조"
