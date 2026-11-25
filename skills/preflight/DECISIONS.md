@@ -592,3 +592,20 @@ a=70 a_sessions=13 b=62 main=202 home=45 norepo=78 path_outside_repo=9
   실행을 기록하고, 옛 `-p no:cacheprovider` 명령은 `suite-not-run` 으로 거부하는 것을 본다.
 - **어디**: `classify.sh`(pytest 명령), `meta-test/engine.sh`(py(c)·py(l)·py(m)·py(o) 기대 문자열, py(f2)), `agents/test-runner.md`, `SKILL.md`,
   `docs/backlog.md`(닫힘 항목의 명령). `ENGINE_VERSION` 은 그대로(확정 명령 문자열만 바뀜 — 키·계약 그대로).
+
+### 카테고리 규칙 훅을 엔진 스위트가 직접 본다
+
+- **왜**: 엔진 카테고리(shell-tool·generic)는 규칙 훅 대부분을 두지 않는다. 그래서 훅을 거쳐야 드러나는 엔진 동작 — vault 문서 판정(`vault_docs`),
+  mode=all 강제(`ALL_MODE_FORCED`), 의존성 줄 패턴(`DEP_KEY_EXTRA`), 관례 판정(`convention`), 등록 조회와 vault 위치(`vault_link`·`vault_dir_fallback`),
+  vault-sync 선택(`VAULT_SYNC`), QA 메타(`qa_meta`), QA 안내(`QA_HINT`) — 은 그 훅을 가진 오버레이 카테고리 스위트에서만 검사됐다. 엔진만 돌리면
+  `classify.sh` 의 훅 호출을 지워도 초록이었다(docs/backlog.md 「엔진 단독 스위트에 조직 카테고리 의존 단언이 없다」).
+- **무엇**: `meta-test/engine.sh` 에 테스트 전용 오버레이를 임시 디렉터리에 만드는 절을 더했다. 카테고리는 둘이다 — `fixture-hooks`(표식 `.fixture-hooks`,
+  훅 전부)와 `fixture-bare`(표식 `.fixture-bare`, match 만). 같은 변경을 두 카테고리 레포에서 분류해, 훅 값(전부 `fh-` 로 시작)이 lane 선택·laneMeta·
+  vaultLink·qa 사유·files 에 그대로 실리는지와 훅이 없을 때 엔진 기본값(`no-vault-doc-change`·카테고리 비해당 사유·`NOT_APPLICABLE`)으로 남는지를 본다.
+  vault 는 로컬 디렉터리 둘(등록 노트 있음·없음)이고 네트워크를 쓰지 않는다. 분류기는 `config.json` 을 뺀 엔진 사본(파일 단위 심링크)으로 돌린다 —
+  설치본 `config.json` 에 `vaultDir` 가 있으면 `vault_dir_fallback` 에 닿지 않는다. `classify.sh` 동작은 바꾸지 않았다.
+  `SECRET_SCAN`·`SECRET_SENSITIVE_EXTRA` 는 「결정론 시크릿 스캔」 절(SS-a·SS-d)이 이미 오버레이 픽스처로 본다. `suites` 도 shell-tool 이 갖지만,
+  카테고리 회귀 명령이 코드 변경 없이 test-runner 를 고르는 경로를 함께 본다(CH-i).
+- **회귀**: `meta-test/engine.sh` 「카테고리 규칙 훅 → 엔진 동작」 CH-a~CH-i 22개. 단언마다 `classify.sh` 의 해당 훅 사용을 깨뜨려(훅 결과 버림·무시,
+  훅이 없을 때의 기본값 변경, VAULT_DIR·폴백 순서 뒤집기) 그 단언이 실패하는 것을 확인하고 되돌렸다.
+- **어디**: `meta-test/engine.sh`(새 절), `docs/backlog.md`(닫힘으로 옮김). `ENGINE_VERSION` 은 그대로(테스트만 — 계약·키 변화 없음).
