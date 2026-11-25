@@ -130,6 +130,27 @@ bash "$PMS" table "$T/pm.m.json" "$T/pm.adj.json" > "$T/pm.t2" 2>&1
 grep -qE "^\| \`force-test-runner-commit\` .* \| $(date +%F) \|$" "$T/pm.t2" && grep -qE '^\| `force-code-reviewer-commit` .* \| 미승인 \|$' "$T/pm.t2" || _pbad="$_pbad 승인열"
 [ -z "$_pbad" ] && ok "PM6: table → 4축 행·재현 명령, 조정 파일을 주면 승인일/미승인 열" || ng "PM6: 표가 어긋난다:$_pbad $(sed -n 5,6p "$T/pm.t")" "머리·행·재현·승인열"
 
+# PM6b — 수정 커밋 제목이 하나도 없는 이력(자연어 제목)이면 영향도는 0 이 아니라 측정 불가다 — 0% 를 결함 없음으로 읽히게 두지 않는다.
+# 픽스처: base 뒤 a.sh·b.js 를 각각 추가하고 고치는 4커밋. 고친 두 커밋(「a.sh 고침」·「b.js typo」)도 제목이 conventional 이 아니라 정규식에 안 걸린다.
+PMNF="$PM/nofix"; pminit "$PMNF"
+printf '# rules\n' > "$PMNF/VAULT_RULES.md"; printf 'x\n' > "$PMNF/README.txt"; pmc "$PMNF" "base"
+printf 'echo one\n' > "$PMNF/a.sh"; pmc "$PMNF" "add a.sh"
+printf 'echo two\n' > "$PMNF/a.sh"; pmc "$PMNF" "a.sh 고침"
+printf 'let b = 1\n' > "$PMNF/b.js"; pmc "$PMNF" "add b.js"
+printf 'let b = 2\n' > "$PMNF/b.js"; pmc "$PMNF" "b.js typo"
+bash "$PMS" measure "$PMNF" > "$T/pm.nf.json" 2>"$T/pm.err"; _rc=$?
+_pv=$(pmjq "$T/pm.nf.json" 'd["fixCommits"], next(c for c in d["candidates"] if c["lane"]=="test-runner")["axes"]["impact"]["measurable"], next(c for c in d["candidates"] if c["lane"]=="test-runner")["axes"]["impact"]["skippedRate"], "측정 불가" in next(c for c in d["candidates"] if c["lane"]=="test-runner")["adjustment"]["evidence"]')
+bash "$PMS" table "$T/pm.nf.json" > "$T/pm.nf.t" 2>&1
+_pbad=''
+[ "$_rc" = 0 ] && [ "$_pv" = "0 False None True" ] || _pbad="$_pbad [measure rc=$_rc $_pv]"
+grep -qE '^\| `force-test-runner-commit` \| [0-9]+/[0-9]+ \([0-9.]+%\) \| 측정 불가\(수정 커밋 0\) \|' "$T/pm.nf.t" || _pbad="$_pbad 표칸"
+grep -qF '영향도 측정 불가 — 재생한 커밋 중 제목이 수정 커밋 정규식에 맞는 커밋이 0개다' "$T/pm.nf.t" || _pbad="$_pbad 안내줄"
+# 대조: 수정 커밋이 있는 PMR 은 그대로 measurable·수치 칸이고 안내 줄이 없다
+_pv=$(pmjq "$T/pm.m.json" 'd["fixCommits"], next(c for c in d["candidates"] if c["lane"]=="test-runner")["axes"]["impact"]["measurable"]')
+[ "$_pv" = "2 True" ] && ! grep -qF '영향도 측정 불가' "$T/pm.t" || _pbad="$_pbad [대조 $_pv]"
+[ -z "$_pbad" ] && ok "PM6b: 수정 커밋 제목 0 → impact.measurable=false·비율 null·근거에 측정 불가, 표 칸과 안내 줄 / 수정 커밋이 있으면 그대로" \
+  || ng "PM6b: 수정 커밋 0 인 이력의 영향도 표시가 어긋난다:$_pbad$(_diag "$T/py.err")" "측정 불가 표시"
+
 # PM7 — init --adjustments: 승인 항목이 프로필에 들어가고, 그 레포의 커밋 분류가 실제로 바뀐다(셸만 바뀐 커밋에 test-runner)
 printf 'echo three\n' > "$PMR/a.sh"; git -C "$PMR" add a.sh
 _pbefore=$(bash "$PM/root/skills/preflight/classify.sh" "$PMR" commit 2>"$T/py.err" | python3 -c 'import json,sys; print("test-runner" in json.load(sys.stdin)["selected"])' 2>>"$T/py.err")
