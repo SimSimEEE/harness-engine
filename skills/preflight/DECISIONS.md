@@ -434,7 +434,7 @@ a=70 a_sessions=13 b=62 main=202 home=45 norepo=78 path_outside_repo=9
 - **무엇**: 기록 명령은 `receipt.sh record commit|pr <repo> --lanes-sha256=<hex> --transcripts-marker=<표식>` 이다. base64 는 기록 에이전트
   프롬프트의 `pf-record-lanes=<b64>` 줄에만 싣고, receipt.sh 가 표식으로 찾은 wf 디렉터리에서 첫 user 메시지에 표식이 든 전사를 골라
   그 메시지(런타임이 쓴 프롬프트)의 그 줄을 디코드해 sha256 으로 대조한다. 모델이 옮겨 적는 값은 sha256(64자)·표식·레포 경로뿐이다.
-  첫 user 메시지만 입력이다 — 에이전트 자신의 도구 호출·출력(뒤 줄)에 쓴 줄은 읽지 않는다. 표식이 든 프롬프트나 그 줄이 하나가 아니면
+  첫 user 메시지만 입력이다(2026-11-25 「사용자 요청 중계 메시지 뒤의 기록 프롬프트도 읽는다」에서 첫 응답 전 user 메시지로 넓힘) — 에이전트 자신의 도구 호출·출력(뒤 줄)에 쓴 줄은 읽지 않는다. 표식이 든 프롬프트나 그 줄이 하나가 아니면
   `lanes-payload-unresolved`, 출처(표식·`--lanes-b64`) 없이 sha256 만 오면 `lanes-digest-mismatch`. `--lanes-b64` 는 그대로 받는다(2.6 형태).
 - **충실도**: 전사는 런타임이 쓴다. 프롬프트 바이트가 곧 워크플로가 계산한 바이트이므로 옮겨 적기 오류가 끼어들 자리가 없다. lane 상태
   위조는 지금처럼 전사 검증(`no-lane-evidence` 등)이 잡는다.
@@ -545,3 +545,25 @@ a=70 a_sessions=13 b=62 main=202 home=45 norepo=78 path_outside_repo=9
 - **어디**: `classify.sh`(Python 테스트 블록), `preflight.js`(test-runner 프롬프트의 tsc 만 문장), `agents/test-runner.md`(0.8), `SKILL.md`(lane 표 한 줄), `docs/backlog.md`(닫힘),
   `meta-test/engine.sh`(「Python 테스트」 절 py(a)~(y)). `ENGINE_VERSION` 2.7 → **2.8**(호환되는 추가 — 새 회귀 명령·laneMeta 키,
   프로필 계약 그대로).
+
+## 2026-11-25
+
+### 사용자 요청 중계 메시지 뒤의 기록 프롬프트도 읽는다
+
+- **왜**: 사용자 메시지로 시작한 턴에서 띄운 게이트 워크플로는 집계가 PASS 여도 워크플로 안 기록이
+  `lanes-payload-unresolved` 로 거부됐다. 그 턴이면 런타임이 기록 에이전트 전사에 `[Workflow harness — user request]` 로 시작하는
+  사용자 요청 중계 user 메시지를 프롬프트 **앞에** 쓰고, 표식과 `pf-record-lanes=` 가 든 프롬프트는 두 번째 user 메시지가 된다.
+  `receipt.sh` 는 첫 user 메시지만 읽어 표식이 든 프롬프트를 찾지 못했다(거부 사유 `lanes-payload-unresolved`). 알림으로 시작한 턴의 워크플로는 중계 메시지가 없어 통과했다 —
+  같은 날 같은 브랜치의 커밋 게이트(사용자 턴)는 거부, PR 게이트(알림 턴)는 `via workflow` 기록. 거부는 fail-closed 라 메인 기록 폴백이
+  있었지만, 사용자 요청으로 시작한 게이트마다 메인 기록 턴이 되살아났다.
+- **무엇**: 런타임 입력을 "첫 user 메시지" 에서 "에이전트가 처음 응답하기 전의 user 메시지들" 로 넓혔다. 그중 **표식이 든 메시지**에서만
+  payload 를 읽는다 — 중계 메시지는 사용자가 친 글이라 표식이 없고, 거기 `pf-record-lanes=` 줄이 있어도 받지 않는다. 첫 응답(assistant 메시지,
+  `tool_use`·`tool_result` 블록) 뒤의 줄은 여전히 입력이 아니고, 표식이 든 프롬프트·payload 줄이 하나일 때만 받는 규칙도 그대로다.
+  중계 메시지의 머리말 문자열에 기대지 않는다 — 런타임이 머리말을 바꿔도 순서(응답 전/후)로 가른다.
+  입력은 상위 `type` 이 `user` 인 행만 센다 — 런타임은 첫 응답 전에도 `api-request-blob` 행(role user)에 요청 사본을 실어 프롬프트가 한 번 더
+  나온다. 첫 수정본은 이 행까지 세 같은 실제 전사를 "표식이 든 프롬프트 둘" 로 거부했다 — 합성 픽스처로는 통과했고, 거부된 실제 전사에
+  같은 기록 명령을 다시 돌려 찾았다. 그 전사로 수정본을 돌리면 `via workflow` 로 기록된다.
+- **회귀**: `meta-test/engine.sh` WR-k — 실제 전사의 행 순서(중계 메시지 · 프롬프트 · attachment · `api-request-blob` · 첫 응답)로 만든 픽스처에서
+  기록되고, 중계 메시지에만 payload 가 있으면 `lanes-payload-unresolved`. 수정 전 `receipt.sh` 와 부가 행을 세던 첫 수정본 모두 WR-k 가 실패한다.
+- **어디**: `receipt.sh`(CONTRACT `workflow-record-inputs`), `preflight.js`(주석). `ENGINE_VERSION` 은 그대로(입력 계약을 고친 결함 수정 —
+  새 플래그·키 없음).

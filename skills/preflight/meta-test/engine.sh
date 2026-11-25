@@ -6373,7 +6373,7 @@ ZB
 } > "$T/wr-cmd.cjs"
 node "$T/wr-cmd.cjs" 2>"$T/py.err" && ok "WR-j: 기록 명령에 base64 가 없고 길이가 lane 결과 크기와 무관하다 (payload 줄의 sha256 = 명령의 --lanes-sha256)" \
   || ng "WR-j: 기록 명령에 lane 결과가 실린다$(_diag "$T/py.err")" "cmd < 200자 · --lanes-b64 없음"
-# receipt.sh — 프롬프트 payload 의 출처 규칙. 첫 user 메시지만 입력이고, 표식이 든 프롬프트·payload 줄이 하나여야 한다.
+# receipt.sh — 프롬프트 payload 의 출처 규칙. 첫 응답 전의 user 메시지만 입력이고, 표식이 든 메시지·payload 줄이 하나여야 한다.
 #  인자: <wf 디렉터리> <표식> <첫 user 메시지에 실을 payload 줄|-> <에이전트 도구 호출에 실을 payload 줄|->
 wrrecp(){ python3 - "$@" <<'ZP'
 import json, os, sys
@@ -6411,6 +6411,34 @@ wrrec "--lanes-sha256=$WRS" "--transcripts-marker=$MK8"; _wri3="$WRRC $(wrlog $L
 wrrec "--lanes-sha256=$WRS"; _wri4="$WRRC $(wrlog $LINENO)"
 [ "$_wri1" = "1 ('refused', 'lanes-digest-mismatch', 'workflow')" ] && [ "$_wri2" = "1 ('refused', 'lanes-payload-unresolved', 'workflow')" ] \
   && [ "$_wri3" = "1 ('refused', 'lanes-payload-unresolved', 'workflow')" ] && [ "$_wri4" = "1 ('refused', 'lanes-digest-mismatch', None)" ] \
-  && ok "WR-i: payload sha 불일치 → lanes-digest-mismatch, 첫 user 메시지 밖의 payload·payload 두 줄 → lanes-payload-unresolved, 출처 없는 sha 만 → 거부" \
+  && ok "WR-i: payload sha 불일치 → lanes-digest-mismatch, 첫 응답 뒤 user 메시지의 payload·payload 두 줄 → lanes-payload-unresolved, 출처 없는 sha 만 → 거부" \
   || ng "WR-i: 프롬프트 payload 출처 규칙이 어긋난다 (불일치: $_wri1 · 뒤 메시지: $_wri2 · 두 줄: $_wri3 · sha 만: $_wri4)" "mismatch · unresolved · unresolved · mismatch"
+# receipt.sh — 사용자 메시지로 시작한 턴이면 런타임이 '사용자 요청 중계' user 메시지를 프롬프트 앞에 쓴다(실측 11-25).
+#  첫 응답 전에 요청 사본(`api-request-blob`, role user, 프롬프트 포함)도 쓴다 — 실제 전사의 행 순서를 따른다.
+#  인자: <wf 디렉터리> <표식> <중계 메시지에 실을 추가 줄|-> <프롬프트에 실을 payload 줄|->
+wrrelay(){ python3 - "$@" <<'ZP'
+import json, os, sys
+d, mk, relay_extra, first = sys.argv[1:5]
+os.makedirs(d, exist_ok=True)
+relay = "[Workflow harness — user request] The harness relays, verbatim and indented below, the user request:\n  여기서 고쳐줘" \
+    + (f"\n  {relay_extra}" if relay_extra != '-' else '')
+prompt = f"전사 표식: {mk}\n- `receipt.sh record`" + (f"\n{first}" if first != '-' else '')
+prompt = "[Workflow harness — computed task] The computed task text follows:\n" + "\n".join("  " + l for l in prompt.split("\n"))
+rows = [{"timestamp": "2026-11-25T10:00:07Z", "type": "user", "message": {"role": "user", "content": relay}},
+        {"timestamp": "2026-11-25T10:00:08Z", "type": "user", "message": {"role": "user", "content": prompt}},
+        {"timestamp": "2026-11-25T10:00:08Z", "type": "attachment"},
+        {"timestamp": "2026-11-25T10:00:08Z", "type": "api-request-blob", "message": {"role": "user", "content": [{"type": "text", "text": "<system-reminder>…</system-reminder>\n" + prompt}]}},
+        {"timestamp": "2026-11-25T10:00:09Z", "type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "r9", "name": "Bash", "input": {"command": "echo"}}]}}]
+open(os.path.join(d, "agent-record1.jsonl"), "w").write("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n")
+ZP
+}
+MK9="pf-record:iii999:0123456789abcdef"; WD9="$WRC/projects/p1/s9/subagents/workflows/wf_tx5"
+wrwf "$WD9" - 1; wrrelay "$WD9" "$MK9" - "pf-record-lanes=$WRB"
+wrrec "--lanes-sha256=$WRS" "--transcripts-marker=$MK9"; _wrk1="$WRRC $(wrlog $LINENO)"
+MK10="pf-record:jjj000:0123456789abcdef"; WD10="$WRC/projects/p1/s10/subagents/workflows/wf_tx6"
+wrwf "$WD10" - 1; wrrelay "$WD10" "$MK10" "pf-record-lanes=$WRB" -
+wrrec "--lanes-sha256=$WRS" "--transcripts-marker=$MK10"; _wrk2="$WRRC $(wrlog $LINENO)"
+[ "$_wrk1" = "0 ('recorded', None, 'workflow')" ] && [ "$_wrk2" = "1 ('refused', 'lanes-payload-unresolved', 'workflow')" ] \
+  && ok "WR-k: 사용자 요청 중계 메시지 뒤의 프롬프트에서 payload 를 읽어 기록하고, 표식 없는 중계 메시지의 payload 는 받지 않는다" \
+  || ng "WR-k: 중계 메시지가 앞에 있을 때 payload 출처가 어긋난다 (중계+프롬프트: $_wrk1 · 중계에만: $_wrk2)" "recorded · unresolved"
 # END workflow-record
