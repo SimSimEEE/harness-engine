@@ -536,6 +536,12 @@ a=70 a_sessions=13 b=62 main=202 home=45 norepo=78 path_outside_repo=9
 - **한계**: pytest 설정은 스냅숏 **루트**만 본다. 기준선 비교는 없다(다른 회귀 명령과 같이 하나라도 실패하면 FAIL).
   pytest 로 판정된 레포(설정·conftest·함수형)에서 그 파이썬에 pytest 가 없으면 게이트가 막힌다 — 의도다. `preflight.js` 의 회귀 명령 지시("돌리지 못했으면
   그것도 FAIL")를 따라 fail-closed 로 두었고, 해결은 pytest 설치다(test-runner 는 reason 에 환경 원인과 해결을 적는다).
+- **인터프리터 전제**: 확정 명령은 `python3` 를 경로 없이 부른다 — lane 의 셸이 물려받은 `PATH` 에서 먼저 찾은 `python3`(보통 시스템
+  파이썬)다. venv·uv·poetry 같은 가상환경을 감지하지 않는다. 의존성을 가상환경에만 둔 레포는 테스트 모듈 import 가 실패해 FAIL 이다(fail-closed,
+  pytest 부재와 같은 취급) — 해결은 그 의존성을 그 `python3` 에 설치하거나 가상환경을 활성화한 셸에서 Claude Code 를 띄우는 것이다.
+  감지를 넣지 않은 이유: 지금 게이트를 지나는 Python 레포의 테스트는 표준 라이브러리만 쓴다(관찰). 감지 규칙(`.venv/bin/python`·`uv.lock`·
+  `poetry.lock` 중 무엇을 어떤 순서로 믿을지)은 그런 레포가 생겼을 때 그 레포의 구성을 보고 정한다. 그때 확정 명령 문자열이 바뀌므로
+  `receipt.sh` 의 `suite-not-run` 대조는 새 문자열을 그대로 따른다.
 - **어디**: `classify.sh`(Python 테스트 블록), `preflight.js`(test-runner 프롬프트의 tsc 만 문장), `agents/test-runner.md`(0.8), `SKILL.md`(lane 표 한 줄), `docs/backlog.md`(닫힘),
   `meta-test/engine.sh`(「Python 테스트」 절 py(a)~(y)). `ENGINE_VERSION` 2.7 → **2.8**(호환되는 추가 — 새 회귀 명령·laneMeta 키,
   프로필 계약 그대로).
