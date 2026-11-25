@@ -508,6 +508,32 @@ for bad in 1 y yes true skip ab; do
   hv "PREFLIGHT_SKIP=$bad git $G -m x" deny && ok "PREFLIGHT_SKIP=$bad → deny" || ng "PREFLIGHT_SKIP=$bad 를 통과시킴 (판정: $PV)" "deny"
 done
 hv "PREFLIGHT_SKIP=\"충돌 해결\" git $G -m x" allow && ok "따옴표 사유 → allow" || ng "따옴표 사유를 막음 (판정: $PV)" "allow"
+# 우회 인정 자리는 명령 맨 앞, 커밋·PR 생성 호출 바로 앞의 환경변수 할당뿐이다. 메시지·히어독 본문·주석·다른 명령 앞의 같은 글자는
+# 우회가 아니라 평소 판정으로 간다. 빈 값 우회는 사유 없는 우회로 거부된다.
+_skb=''
+for _c in "git $G -m \"explain PREFLIGHT_SKIP=abcd in docs\"" "git $G -m 'x; PREFLIGHT_SKIP=abcd y'" \
+          "git $G -F - <<'EOF'
+PREFLIGHT_SKIP=abcd docs
+EOF" "PREFLIGHT_SKIP=abcd echo hi; git $G -m x" "git $G -m x # PREFLIGHT_SKIP=abcd" \
+          "git $G -m \"\$(cat <<'EOF'
+Handle 5\" values
+(PREFLIGHT_SKIP=abcd git $G is the only form)
+EOF
+)\"" "PREFLIGHT_SKIP=abcd git status; git $G -m x" "PREFLIGHT_SKIP=abcd gh issue list && gh pr create -t x"; do
+  : > "$PF_LOG"; pv "$_c" >/dev/null
+  grep -q '"outcome": *"bypassed"' "$PF_LOG" && _skb="$_skb [$(printf '%s' "$_c" | head -1 | cut -c1-40)]"
+done
+[ -z "$_skb" ] && ok "메시지·히어독 본문(명령 치환 안 짝 없는 따옴표 포함)·다른 명령 앞·주석·다른 git/gh 호출 앞의 PREFLIGHT_SKIP= 는 우회로 인정되지 않는다" \
+  || ng "할당 자리가 아닌 PREFLIGHT_SKIP= 이 우회로 인정됐다:$_skb" "bypassed 0"
+_skb=''
+for _c in "cd $repo && PREFLIGHT_SKIP=gitignore-only git $G -m x" "env PREFLIGHT_SKIP=gitignore-only git $G -m x"; do
+  : > "$PF_LOG"; pv "$_c" >/dev/null
+  grep -q '"outcome": *"bypassed"' "$PF_LOG" || _skb="$_skb [$(printf '%s' "$_c" | cut -c1-40)]"
+done
+[ -z "$_skb" ] && ok "분리자 뒤·env 뒤의 할당은 여전히 우회로 인정된다" || ng "정당한 우회 형태가 인정되지 않는다:$_skb" "bypassed"
+: > "$PF_LOG"; pv "PREFLIGHT_SKIP= git $G -m x" >/dev/null
+grep -q '"reason": *"bypass-without-reason"' "$PF_LOG" && ! grep -q '"outcome": *"bypassed"' "$PF_LOG" \
+  && ok "빈 값 우회는 사유 없는 우회로 거부된다" || ng "빈 값 우회가 거부되지 않았다 ($(tail -1 "$PF_LOG" | cut -c1-120))" "bypass-without-reason"
 
 echo "== 대상 디렉터리를 해석 못하면 막는다 =="
 # 조용히 CWD 로 떨어지면 엉뚱한 레포의 영수증을 검증한다 (2026-09-09 실제 발생 —
