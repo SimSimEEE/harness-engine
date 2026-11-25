@@ -264,16 +264,38 @@ fi
 
 # 우회에는 사유가 필요하다. 흔적만 남고 이유가 안 남으면 나중에 "왜 건너뛰었나" 를 못 센다 —
 # 사유가 없으면 우회 기록만 남고 왜 우회했는지는 사람에게 물어야 한다.
-if printf '%s' "$CMD" | grep -q 'PREFLIGHT_SKIP='; then
-    # CONTRACT: hook-emits-bytes-not-str — 사유도 명령 문자열에서 파생된다.
-    skip_reason=$(CMD="$CMD" python3 -c '
+# 우회로 인정하는 자리는 **명령 전체의 맨 앞**, 커밋·PR 생성 호출 바로 앞의 환경변수 할당뿐이다. 허용하는 앞머리는
+# `cd <경로> &&` 하나와 `env` 접두, 다른 할당들이다: `PREFLIGHT_SKIP=… git [-C 경로] commit …`, `cd X && PREFLIGHT_SKIP=… git commit …`,
+# `env PREFLIGHT_SKIP=… gh pr create …`. 맨 앞만 보므로 뒤의 커밋 메시지·히어독 본문·주석의 같은 글자는 판정에 들어오지 않는다 —
+# 문자열 전체를 훑거나 따옴표를 추적하는 방식으로 넓히지 마라(명령 치환 안 히어독의 짝 없는 따옴표가 따옴표 상태를 뒤집는다,
+# DECISIONS.md 2026-11-25). 그 밖의 자리의 글자는 우회가 아니라 평소 판정(영수증 검증)으로 간다.
+# CONTRACT: hook-emits-bytes-not-str — 사유도 명령 문자열에서 파생된다. 출력은 한 줄 `F:<사유>`(찾음) 또는 `N`(없음)이다.
+skip_out=$(CMD="$CMD" python3 -c '
 import os, re, sys
-q = chr(39)
-m = re.search("PREFLIGHT_SKIP=(?:" + chr(34) + "([^" + chr(34) + "]*)" + chr(34)
-              + "|" + q + "([^" + q + "]*)" + q + "|(\\S+))", os.environ.get("CMD", ""))
-s = (next((g for g in m.groups() if g), "") if m else "").strip()
-sys.stdout.buffer.write(s.encode("utf-8", "surrogateescape") + b"\n")
+cmd = os.environ.get("CMD", "")
+SQ, DQ, BS = chr(39), chr(34), chr(92)
+VAL = "(?:" + DQ + "((?:[^" + DQ + BS + BS + "]|" + BS + BS + ".)*)" + DQ + "|" + SQ + "([^" + SQ + "]*)" + SQ + "|([^\\s;&|()" + SQ + DQ + "]*))"
+PATH = "(?:" + DQ + "[^" + DQ + "]+" + DQ + "|" + SQ + "[^" + SQ + "]+" + SQ + "|[^\\s;&|()]+)"
+rest = cmd.lstrip(" \t")
+m = re.match("cd\\s+" + PATH + "\\s*&&\\s*", rest)
+if m: rest = rest[m.end():]
+rest = re.sub("^env\\s+", "", rest)
+found = None
+while True:
+    m = re.match("([A-Za-z_][A-Za-z0-9_]*)=" + VAL + "\\s+", rest)
+    if not m: break
+    if m.group(1) == "PREFLIGHT_SKIP":
+        found = next((g for g in m.groups()[1:4] if g is not None), "")
+    rest = rest[m.end():]
+# 할당 바로 뒤가 게이트가 지키는 호출 자체여야 한다 — 다른 git·gh 호출 앞의 할당은 그 호출의 환경일 뿐이다.
+CALL = "(?:\\S*/)?(?:git\\s+(?:-C\\s+" + PATH + "\\s+)?commit|gh\\s+pr\\s+create)(?:\\s|$)"
+if found is not None and re.match(CALL, rest):
+    sys.stdout.buffer.write(b"F:" + found.strip().encode("utf-8", "surrogateescape") + b"\n")
+else:
+    sys.stdout.buffer.write(b"N\n")
 ' 2>/dev/null)
+if [ "${skip_out:0:2}" = "F:" ]; then
+    skip_reason=${skip_out#F:}
     case "$skip_reason" in
         ''|1|0|y|Y|yes|YES|true|TRUE|skip|SKIP) skip_reason="" ;;
     esac
