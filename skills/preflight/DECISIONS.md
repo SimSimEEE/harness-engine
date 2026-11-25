@@ -567,3 +567,14 @@ a=70 a_sessions=13 b=62 main=202 home=45 norepo=78 path_outside_repo=9
   기록되고, 중계 메시지에만 payload 가 있으면 `lanes-payload-unresolved`. 수정 전 `receipt.sh` 와 부가 행을 세던 첫 수정본 모두 WR-k 가 실패한다.
 - **어디**: `receipt.sh`(CONTRACT `workflow-record-inputs`), `preflight.js`(주석). `ENGINE_VERSION` 은 그대로(입력 계약을 고친 결함 수정 —
   새 플래그·키 없음).
+
+### 회귀 명령이 있어도 jest 건너뜀은 알린다
+
+- **왜**: 2.8 에서 회귀 명령(Python 테스트·meta-test 등)이 확정되면 "실행 가능한 테스트가 없다 — `tsc --noEmit` 만" 문장을 통째로
+  뺐다(「Python 테스트를 분류기가 확정한다」 프롬프트 항). 그 결과 jest 테스트가 없는 `package.json`(`tscOnly=True`)과 회귀 명령이 함께인
+  레포에서는 jest 를 건너뛰라는 안내까지 사라져, lane 이 jest 를 돌려 테스트를 찾지 못한 실패를 만들 수 있었다(2.8 PR 리뷰의 비차단 지적).
+- **무엇**: `tscOnly` 면 언제나 jest 건너뜀을 알린다. 변이 하네스가 아닌 회귀 명령이 있으면 "jest 로 돌릴 테스트가 없다 — jest 는 건너뛴다고
+  명시해라. 아래 회귀 명령은 그대로 돌린다", 없으면 지금 문장 그대로다.
+- **회귀**: `meta-test/engine.sh` py(z) — `{"name":"x"}` package.json + TS 파일 + unittest 테스트가 있는 레포의 `.py` 변경에서 새 문장과
+  회귀 명령이 함께 나가고 "실행 가능한 테스트가 없다" 는 나가지 않는다. py(y) 두 단언은 그대로다.
+- **어디**: `preflight.js`(test-runner 프롬프트), `meta-test/engine.sh`. `ENGINE_VERSION` 은 그대로(프롬프트 문구 — 계약·키 변화 없음).
