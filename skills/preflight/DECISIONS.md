@@ -609,3 +609,16 @@ a=70 a_sessions=13 b=62 main=202 home=45 norepo=78 path_outside_repo=9
 - **회귀**: `meta-test/engine.sh` 「카테고리 규칙 훅 → 엔진 동작」 CH-a~CH-i 22개. 단언마다 `classify.sh` 의 해당 훅 사용을 깨뜨려(훅 결과 버림·무시,
   훅이 없을 때의 기본값 변경, VAULT_DIR·폴백 순서 뒤집기) 그 단언이 실패하는 것을 확인하고 되돌렸다.
 - **어디**: `meta-test/engine.sh`(새 절), `docs/backlog.md`(닫힘으로 옮김). `ENGINE_VERSION` 은 그대로(테스트만 — 계약·키 변화 없음).
+
+### 스냅숏 체크아웃의 HEAD 해시가 다른 것은 정상이라고 알린다
+
+- **왜**: snapshot.sh 는 기준 커밋(또는 커밋될 인덱스)의 트리로 `commit-tree` 커밋을 새로 만들어 체크아웃하고, 체크아웃의 `HEAD^{tree}` 를 그 트리와
+  대조한다. 내용은 같지만 HEAD 해시는 기준 커밋과 늘 다르다. 프롬프트가 기준 커밋 해시만 주니 lane 이 HEAD 를 비교해 기준선을 버리거나 의심했다 —
+  측정(2026-11-18 「측정 입력을 6개 더했다」 `node-baseline-broken-clean`)에서 두 모델 각 1/5, 실제 게이트에서도 test-runner FAIL 중
+  "체크아웃 HEAD 가 기준 커밋과 달라 기준선 미실행"·"기준선 HEAD 가 프롬프트의 기준과 다르다(확인 필요)" 가 나왔다(관찰 — 전 세션 워크플로
+  journal 의 test-runner FAIL 사유를 훑어 찾았다).
+- **무엇**: 기준선 수집 프롬프트와 test-runner 의 기준선 줄에 "HEAD 해시가 다른 것이 정상 — 내용은 기준 커밋의 트리(트리 id 앞 12자)이고
+  snapshot.sh 가 대조했다 — HEAD 차이로 기준선을 버리거나 의심하지 마라" 를 넣었다. 대상 스냅숏 블록에도 HEAD 가 원본 커밋 해시와 다른 것이
+  정상이라는 한 문장을 더했다.
+- **회귀**: `meta-test/engine.sh` 변이 절의 스텁 프롬프트에서 baseline·test-runner 프롬프트가 그 문장을 싣는지 본다.
+- **어디**: `preflight.js`(BASE_HEAD_NOTE, snapshot-block), `meta-test/engine.sh`, `docs/backlog.md`(닫힘). `ENGINE_VERSION` 은 그대로(프롬프트 문구).
