@@ -95,22 +95,6 @@ prepare 가 기록한 실경로(`agentSources[l].source`)를 다시 해시하므
 
 **먼저 셀 것**: 측정 도중 설치를 바꾼 적이 있는지(없으면 우선순위 낮음).
 
-### manifest 의 `harness`·`harnessDirty` 가 파일 링크·복사 설치에서 비어 있다
-위치: `skills/preflight/eval/flip.sh` 의 `git -C REPO rev-parse HEAD` / `status --porcelain`.
-
-REPO 는 스크립트 디렉터리 기준이라 그 설치 형태에서 체크아웃이 아니다 — 커밋이 빈 문자열, dirty 가 false 로 남는다.
-
-→ 닫는 방법: `engine_checkout()` 결과로 계산하고 없으면 null.
-
-### `PF_AGENTS_DIR` 설명이 워크플로가 읽는 정의를 바꾸는 것처럼 읽힌다
-위치: `skills/preflight/eval/flip.sh` 의 `AGENTS_DIR` 주석·재측정 쪽 주석.
-
-이 변수는 flip 이 해시할 자리만 바꾼다. 세션 등록이 읽지 않는 디렉터리를 주면 manifest 가 돌지 않은 정의를 기록한다.
-
-→ 닫는 방법: 주석에 "해시할 자리만 바꾼다 — 세션이 읽는 agents 디렉터리를 줘라" 를 적는다.
-
----
-
 ### unittest 확정 명령이 두 패턴에 걸리는 파일을 두 번 돌린다
 `classify.sh` 의 Python 테스트 블록은 unittest 레포에서 디렉터리마다 패턴별로 discover 명령을 하나씩 낸다 — 한 디렉터리에
 `test_a.py` 와 `b_test.py` 가 같이 있으면 `-p 'test_*.py'` 와 `-p '*_test.py'` 두 명령이다. 같은 디렉터리에 `test_c_test.py` 처럼
@@ -128,6 +112,8 @@ REPO 는 스크립트 디렉터리 기준이라 그 설치 형태에서 체크�
 
 지금 고치지 않는 이유: 관찰상 로컬의 Python 테스트 레포에서 (2) 에 해당하는 디렉터리를 찾지 못했다 — 실제로 비용이 생기는 레포가 없다(2026-11-25).
 
+---
+
 ## 닫힘
 
 ### 기준선 체크아웃의 HEAD 가 프롬프트의 기준 커밋과 달라 lane 이 기준선을 의심한다 — 닫힘 (2026-11-25)
@@ -143,6 +129,24 @@ REPO 는 스크립트 디렉터리 기준이라 그 설치 형태에서 체크�
 **먼저 셀 것**: 실제 로그의 test-runner FAIL 중 사유에 기준선 불일치가 적힌 비율.
 
 닫힘: 기준선 수집·test-runner·대상 스냅숏 프롬프트가 HEAD 해시 차이가 정상임을 알린다 — `skills/preflight/DECISIONS.md` 2026-11-25 「스냅숏 체크아웃의 HEAD 해시가 다른 것은 정상이라고 알린다」.
+
+### `PF_AGENTS_DIR` 설명이 워크플로가 읽는 정의를 바꾸는 것처럼 읽힌다 — 닫힘 (2026-11-25)
+위치: `skills/preflight/eval/flip.sh` 의 `AGENTS_DIR` 주석·재측정 쪽 주석.
+
+이 변수는 flip 이 해시할 자리만 바꾼다. 세션 등록이 읽지 않는 디렉터리를 주면 manifest 가 돌지 않은 정의를 기록한다.
+
+→ 닫는 방법: 주석에 "해시할 자리만 바꾼다 — 세션이 읽는 agents 디렉터리를 줘라" 를 적는다.
+
+닫힘: 두 구간 주석에 "해시할 자리만 바꾼다 — 세션이 실제로 읽는 agents 디렉터리를 줘라" 를 적었다 — 같은 DECISIONS 절.
+
+### manifest 의 `harness`·`harnessDirty` 가 파일 링크·복사 설치에서 비어 있다 — 닫힘 (2026-11-25)
+위치: `skills/preflight/eval/flip.sh` 의 `git -C REPO rev-parse HEAD` / `status --porcelain`.
+
+REPO 는 스크립트 디렉터리 기준이라 그 설치 형태에서 체크아웃이 아니다 — 커밋이 빈 문자열, dirty 가 false 로 남는다.
+
+→ 닫는 방법: `engine_checkout()` 결과로 계산하고 없으면 null.
+
+닫힘: 두 manifest 모두 `engine_checkout()` 에서 재고, 체크아웃이 아니면 null — `skills/preflight/DECISIONS.md` 2026-11-25 「flip manifest 의 harness 를 엔진 체크아웃에서 잰다」.
 
 ### 엔진 단독 스위트에 조직 카테고리 의존 단언이 없다 — 닫힘 (2026-11-25)
 엔진을 오버레이 레포에서 떼어 낼 때(2026-11-17), vault 등록 조회·QA 안내·관례 범위처럼 **카테고리 규칙 훅을

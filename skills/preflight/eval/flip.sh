@@ -251,13 +251,32 @@ if [ "$cmd" = remeasure-prepare ]; then
     done
 fi
 if [ "$cmd" = remeasure-prepare ] || [ "$cmd" = remeasure-score ]; then
-OUT="$out" PF="$PF" CMD="$cmd" python3 - "$@" <<'PY'
+OUT="$out" PF="$PF" CMD="$cmd" FLIP_FILE="$SELF/$(basename "${BASH_SOURCE[0]}")" python3 - "$@" <<'PY'
 import hashlib, json, os, subprocess, sys, collections, time
 OUT, PF, CMD = (os.environ[k] for k in ('OUT', 'PF', 'CMD'))
-REPO = os.path.dirname(os.path.dirname(PF))
-# lane 측정과 같다 — 워크플로가 해석하는 것은 설치본 정의다(PF_AGENTS_DIR 로 바꾼다)
+# lane 측정과 같다 — 워크플로가 해석하는 것은 설치본 정의다. PF_AGENTS_DIR 는 **해시할 자리만** 바꾼다 — 워크플로가 읽는
+# 정의를 바꾸지 않으므로, 세션이 실제로 읽는 agents 디렉터리를 줘라(다른 곳을 주면 manifest 가 돌지 않은 정의를 기록한다).
 AGENT = os.path.realpath(os.path.join(os.path.expanduser(os.environ.get('PF_AGENTS_DIR') or '~/.claude/agents'),
                                       'claim-remeasurer.md'))
+AGENTS_DIR = os.path.expanduser(os.environ.get('PF_AGENTS_DIR') or '~/.claude/agents')
+# 엔진 체크아웃 — lane 측정 구간의 engine_checkout() 과 같은 규칙(PF_ENGINE_REPO, 아니면 이 스크립트 실경로의 체크아웃).
+def engine_checkout():
+    e = os.environ.get('PF_ENGINE_REPO')
+    if e: return os.path.realpath(os.path.expanduser(e))
+    f = os.path.realpath(os.environ.get('FLIP_FILE') or '')
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(f))))   # <root>/skills/preflight/eval/flip.sh
+    if os.path.realpath(root) in (os.path.realpath(os.path.dirname(AGENTS_DIR)), os.path.realpath(os.path.expanduser('~/.claude'))): return None
+    return root if os.path.isdir(os.path.join(root, 'agents')) else None
+# manifest 의 harness·harnessDirty 는 엔진 **체크아웃**에서 잰다. 스크립트 디렉터리(REPO)는 파일 단위 링크·복사 설치에서 설치 루트라
+# 체크아웃이 아니다 — 거기서 재면 커밋이 빈 문자열, 변경이 false 로 남는다. 체크아웃을 못 찾으면 둘 다 null 이다.
+def harness_state(root):
+    if not root: return None, None
+    top = subprocess.run(['git', '-C', root, 'rev-parse', '--show-toplevel'], capture_output=True, text=True)
+    if top.returncode or os.path.realpath(top.stdout.strip()) != os.path.realpath(root): return None, None
+    head = subprocess.run(['git', '-C', root, 'rev-parse', '--verify', '-q', 'HEAD'], capture_output=True, text=True).stdout.strip() or None
+    dirty = bool(subprocess.run(['git', '-C', root, 'status', '--porcelain', '--', 'agents', 'skills/preflight'],
+                                capture_output=True, text=True).stdout.strip()) if head else None
+    return head, dirty
 def sha(p):
     try: return hashlib.sha1(open(p, 'rb').read()).hexdigest()
     except OSError: return None
@@ -277,7 +296,7 @@ if CMD == 'remeasure-prepare':
         args = {'repo': cls['repo'], 'mode': 'pr', 'round': 1, 'priorFindings': [], 'classification': cls}
         json.dump(args, open(os.path.join(base, 'args.json'), 'w'), ensure_ascii=False, indent=1)
         fixtures[n] = {'repo': cls['repo'], 'expect': exp, 'targets': len(rm['targets']), 'args': os.path.join(base, 'args.json')}
-    head = subprocess.run(['git', '-C', REPO, 'rev-parse', 'HEAD'], capture_output=True, text=True).stdout.strip()
+    head, _ = harness_state(engine_checkout())
     man = {'created': time.strftime('%Y-%m-%dT%H:%M:%S%z'), 'harness': head, 'agent': sha(AGENT),
            'workflow': os.path.join(PF, 'preflight.js'), 'fixtures': fixtures}
     json.dump(man, open(os.path.join(OUT, 'manifest.json'), 'w'), ensure_ascii=False, indent=1)
@@ -368,7 +387,6 @@ fi
 OUT="$out" SELF="$SELF" PF="$PF" CMD="$cmd" FLIP_FILE="$SELF/$(basename "${BASH_SOURCE[0]}")" python3 - "$@" <<'PY'
 import hashlib, json, os, subprocess, sys, collections, time
 OUT, SELF, PF, CMD = (os.environ[k] for k in ('OUT', 'SELF', 'PF', 'CMD'))
-REPO = os.path.dirname(os.path.dirname(PF))
 
 def sha(p):
     try: return hashlib.sha1(open(p, 'rb').read()).hexdigest()
@@ -376,7 +394,8 @@ def sha(p):
 
 # 워크플로는 agentType 을 세션의 에이전트 등록에서 해석한다 — 설치본(~/.claude/agents)이다. 이 레포의
 # agents/ 가 아니다. 오버레이가 같은 이름의 정의를 덮으면 측정되는 것은 오버레이 정의다. 그래서 다이제스트는
-# 설치본에서 뜨고, 그 실경로와 레포 정의와의 일치 여부를 함께 남긴다. PF_AGENTS_DIR 로 자리를 바꾼다.
+# 설치본에서 뜨고, 그 실경로와 레포 정의와의 일치 여부를 함께 남긴다. PF_AGENTS_DIR 는 **해시할 자리만** 바꾼다 — 워크플로가
+# 읽는 정의를 바꾸지 않으므로, 세션이 실제로 읽는 agents 디렉터리를 줘라(다른 곳을 주면 manifest 가 돌지 않은 정의를 기록한다).
 AGENTS_DIR = os.path.expanduser(os.environ.get('PF_AGENTS_DIR') or '~/.claude/agents')
 def agent_source(l):
     p = os.path.join(AGENTS_DIR, f'{l}.md')
@@ -395,6 +414,16 @@ def engine_checkout():
     if os.path.realpath(root) in (os.path.realpath(os.path.dirname(AGENTS_DIR)), os.path.realpath(os.path.expanduser('~/.claude'))): return None
     return root if os.path.isdir(os.path.join(root, 'agents')) else None
 ENGINE = engine_checkout()
+# manifest 의 harness·harnessDirty 는 엔진 **체크아웃**에서 잰다. 스크립트 디렉터리(REPO)는 파일 단위 링크·복사 설치에서 설치 루트라
+# 체크아웃이 아니다 — 거기서 재면 커밋이 빈 문자열, 변경이 false 로 남는다. 체크아웃을 못 찾으면 둘 다 null 이다.
+def harness_state(root):
+    if not root: return None, None
+    top = subprocess.run(['git', '-C', root, 'rev-parse', '--show-toplevel'], capture_output=True, text=True)
+    if top.returncode or os.path.realpath(top.stdout.strip()) != os.path.realpath(root): return None, None
+    head = subprocess.run(['git', '-C', root, 'rev-parse', '--verify', '-q', 'HEAD'], capture_output=True, text=True).stdout.strip() or None
+    dirty = bool(subprocess.run(['git', '-C', root, 'status', '--porcelain', '--', 'agents', 'skills/preflight'],
+                                capture_output=True, text=True).stdout.strip()) if head else None
+    return head, dirty
 def agent_provenance(lanes):
     out = {}
     for l in sorted(lanes):
@@ -455,9 +484,7 @@ if CMD == 'prepare':
     unused = sorted({l for m in ovr.values() for l in m} - lanes_all)
     if unused:
         sys.exit(f'override 한 lane 을 재는 입력이 없다: {unused} — 입력을 고르거나 override 를 빼라')
-    head = subprocess.run(['git', '-C', REPO, 'rev-parse', 'HEAD'], capture_output=True, text=True).stdout.strip()
-    dirty = bool(subprocess.run(['git', '-C', REPO, 'status', '--porcelain', '--', 'agents', 'skills/preflight'],
-                                capture_output=True, text=True).stdout.strip())
+    head, dirty = harness_state(ENGINE)
     man = {'created': time.strftime('%Y-%m-%dT%H:%M:%S%z'), 'harness': head, 'harnessDirty': dirty,
            'agents': agent_digests(lanes_all), 'agentSources': agent_provenance(lanes_all),
            'conventionDocs': {d: sha(d) for d in sorted(docs)},
@@ -567,7 +594,7 @@ res = {'harness': man['harness'], 'harnessDirty': man['harnessDirty'], 'agents':
 if as_json:
     print(json.dumps(res, ensure_ascii=False, indent=1))
 else:
-    print(f'harness {man["harness"][:7]}{" (작업 중 변경 있음)" if man["harnessDirty"] else ""}'
+    print(f'harness {(man["harness"] or "-")[:7]}{" (작업 중 변경 있음)" if man["harnessDirty"] else ""}'
           f' · agents ' + ' '.join(f'{l}={(d or "-")[:7]}' + ('(주입)' if l in inj else '') for l, d in agents_rep.items())
           + (f' · override {json.dumps(man["overrides"])}' if man.get('overrides') else ''))
     for r in rows:
