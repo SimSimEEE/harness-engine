@@ -4429,6 +4429,17 @@ PY="$T/py-y2"; ixrepo "$PY"; mkdir -p "$PY/src"; printf 'export const a = 1;\n' 
 printf 'export const a = 2;\n' > "$PY/src/a.ts"; git -C "$PY" add -A; ixcl "$PY" commit > "$T/py-y2.json"
 _pyy2=$(node "$T/stub-prompts.cjs" "$_PYPJ" "$T/py-y2.json" 2>>"$T/py-y.err" | python3 -c 'import json,sys; t=json.load(sys.stdin).get("test-runner",""); print(bool(t), "실행 가능한 테스트가 없다" in t)' 2>>"$T/py-y.err")
 [ "$_pyy2" = "True True" ] && ok "py(y): 회귀 명령 없는 TS 레포에는 tsc 만 문장이 그대로 나간다" || ng "py(y): tsc 만 문장이 사라졌다 ($_pyy2)" "True True"
+# (z) 회귀 명령과 jest 없는 package.json 이 함께면 jest 만 건너뛰라는 문장이 나간다 — 문장이 통째로 빠지면 lane 이 테스트 없는
+#     레포에서 jest 를 돌려 "No tests found" 로 실패를 만든다.
+PY="$T/py-z"; ixrepo "$PY"; mkdir -p "$PY/src" "$PY/tools"; printf '{"name":"x"}\n' > "$PY/package.json"
+printf 'export const a = 1;\n' > "$PY/src/a.ts"; printf 'def f():\n    return 1\n' > "$PY/tools/m.py"
+printf 'import unittest\nclass T(unittest.TestCase):\n    def test_f(self):\n        self.assertTrue(True)\n' > "$PY/tools/test_m.py"
+git -C "$PY" add -A; git -C "$PY" "$G" -qm init
+printf 'def f():\n    return 2\n' > "$PY/tools/m.py"; git -C "$PY" add -A; ixcl "$PY" commit > "$T/py-z.json"
+_pyz=$(node "$T/stub-prompts.cjs" "$_PYPJ" "$T/py-z.json" 2>>"$T/py-y.err" | python3 -c 'import json,sys; t=json.load(sys.stdin).get("test-runner",""); print("discover -s tools" in t, "jest 로 돌릴 테스트가 없다" in t, "실행 가능한 테스트가 없다" in t)' 2>>"$T/py-y.err")
+[ "$(ixj "$(cat "$T/py-z.json")" 'd["laneMeta"]["test-runner"]["tscOnly"]')" = "True" ] && [ "$_pyz" = "True True False" ] \
+  && ok "py(z): jest 테스트 없는 package.json + 회귀 명령이면 jest 만 건너뛰라는 문장과 회귀 명령이 함께 나간다" \
+  || ng "py(z): jest 건너뜀 안내가 회귀 명령과 함께 나가지 않는다 ($_pyz)" "True True False"
 
 # R10 — PR 모드는 merge-base..HEAD 의 커밋만 본다.
 IX="$T/ix10"; ixrepo "$IX"; git init -q --bare -b main "$IX.origin.git"; git -C "$IX" remote add origin "$IX.origin.git"
