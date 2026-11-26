@@ -94,13 +94,16 @@ ENV_RX = WB + r"(GIT_[A-Za-z0-9_]*)="
 SHELL_ALT = "sh|bash|zsh|dash|ksh|fish|csh|tcsh"
 NEST_RX = WB + r"(?:(?:\S*/)?(?:" + SHELL_ALT + r")(?=\s)[^;&|()" + chr(10) + r"]*?\s-[A-Za-z]*c[A-Za-z]*(?=\s|$)|eval(?=\s))"
 LOOSE_CALL = r"git" + QC + r"\s+(?:[^;&|]*?\s)?" + QC + r"commit(?![A-Za-z0-9_-])"
-# 따옴표 구분자 히어독(`<<'X'`·`<<"X"`·`<<\X`, `<<-` 포함)의 본문은 확장되지 않는 글이다 — 그 줄의 커밋 호출은
-# **개수(n)에만** 넣지 않고 중첩 셸 판정도 하지 않는다 — 메시지 안의 `git commit`·`bash -c '…'` 글이 둘째 호출·중첩 커밋으로
-# 읽히지 않게. 그 본문은 소비자가 셸이 아니라 실행되지 않는다. 전역 옵션·해석 불가·`GIT_` 환경변수 판정은 그대로 건다.
-# 같은 줄에 셸 단어가 있으면(`cat <<'X' | bash`) 본문이 명령으로 실행되므로 센다.
+# 따옴표 구분자 히어독(`<<'X'`·`<<"X"`·`<<\X`, `<<-` 포함)의 본문은 확장되지 않는 글이다. 여는 줄이 **확실히 실행하지 않는
+# 형태**일 때만 그 본문 줄을 커밋 호출 개수와 중첩 셸 판정에서 뺀다 — 메시지 안의 `git commit`·`bash -c "…"` 글이 둘째 호출·
+# 중첩 커밋으로 읽히지 않게. 전역 옵션·해석 불가·`GIT_` 환경변수 판정은 그대로 건다.
+# 확실히 실행하지 않는 형태(화이트리스트): 여는 논리 줄(`\` 줄잇기를 이은 것)이 `\` 로 끝나지 않고, 어디에도(따옴표 안 포함)
+# `|`·`>(`·`<(` 가 없고, 셸 단어·`eval`·`source`·`.` 가 없다. 셸 단어를 열거해 실행 형태를 찾는 쪽은 `| bash;`·`(… | bash)`·
+# `> >(bash)`·줄잇기마다 새 갈래가 나왔다. 모호하면 센다. `$(` 는 받는다(명령 치환 안 `cat` 히어독이 표준 메시지 형태다).
 HD_RX = (r"(?<!<)<<(?!<)(-?)\s*(?:" + chr(39) + r"([^" + chr(39) + r"]+)" + chr(39) + r"|" + chr(34) + r"([^" + chr(34) + r"]+)" + chr(34)
          + r"|\\([A-Za-z0-9_.-]+)|([A-Za-z0-9_.-]+))")
-SHELLWORD_RX = WB + r"(?:\S*/)?(?:" + SHELL_ALT + r"|eval|source|\.)(?=\s|$)"
+HD_RUN_RX = (r"[|]|>\(|<\(|(?:^|(?<=[\s;&|()" + BQ + chr(34) + chr(39) + r"]))(?:[^\s;&|()]*/)?(?:" + SHELL_ALT
+             + r"|eval|source|\.)(?=[\s;&|()" + BQ + chr(34) + chr(39) + r"]|$)")
 def tokens(line):
     lx = shlex.shlex(line, posix=True, punctuation_chars=True)
     lx.whitespace_split = True
@@ -181,12 +184,16 @@ def commit_calls(toks, depth, st, nest=True):
         i = max(j, i + 1)
     return out
 def uncounted_lines(lines):
-    # 따옴표 구분자 히어독 본문의 줄 번호. 구분자 판정은 줄 글의 정규식 근사다 — 인자 글 안의 `<<'X'` 에 속으면
-    # 그 사이 줄의 커밋이 개수에서 빠질 뿐이고(옛 훅과 같은 첫 호출 판정), 형태·환경변수·중첩 판정은 빠지지 않는다.
+    # 개수·중첩 판정에서 뺄 따옴표 히어독 본문의 줄 번호. 구분자 판정은 줄 글의 정규식 근사다 — 인자 글 안의 `<<'X'` 에
+    # 속으면 그 사이 줄의 커밋이 개수와 중첩 판정에서 빠진다(옛 훅과 같은 첫 호출 판정). 형태·`GIT_` 환경변수 판정은 그대로다.
     skip, i = set(), 0
     while i < len(lines):
         nxt = i + 1
-        shell = bool(re.search(SHELLWORD_RX, lines[i]))
+        start = i
+        while start > 0 and lines[start - 1].endswith(chr(92)):
+            start -= 1
+        opener = chr(10).join(lines[start:i + 1])
+        shell = lines[i].endswith(chr(92)) or bool(re.search(HD_RUN_RX, opener))
         for m in re.finditer(HD_RX, lines[i]):
             dash = m.group(1) == "-"
             delim = next(g for g in m.groups()[1:] if g is not None)

@@ -909,8 +909,8 @@ grep -n 'hj.exists()' make-harness-view.sh                                    # 
 
 세 거부를 넣은 뒤에도 남는 갈래다. 앞의 셋은 과탐이거나 직전 훅과 같은 판정으로 떨어지고, 넷째·다섯째는 그 전부터 있던 미탐, 여섯째는 새 판정의 빈틈이다.
 
-1. **가짜 히어독**: 따옴표 안 `"<<'X'"` 글 뒤에 `X` 줄이 오면 그 사이 줄의 커밋이 개수에서 빠져 `commit-multiple` 을 피한다. 직전 훅과 같은 첫 호출
-   판정으로 떨어진다. 재현: `echo "<<'true'"` / `git -C /a commit -m x` / `git -C /b commit -m y` / `true` (네 줄, 한 호출).
+1. **가짜 히어독**: 실행하지 않는 줄(파이프·프로세스 치환·셸 단어 없음)의 따옴표 안 `"<<'X'"` 글 뒤에 `X` 줄이 오면 그 사이 줄의 커밋이 개수와
+   중첩 판정에서 빠져 `commit-multiple`·`commit-nested-shell` 을 피한다. 직전 훅과 같은 첫 호출 판정으로 떨어진다. 재현: `echo "<<'true'"` / `git -C /a commit -m x` / `git -C /b commit -m y` / `true` (네 줄, 한 호출).
 2. **문장 범위**: 앞 문장의 일회성 할당 `GIT_PAGER=cat git log; git commit …` 도 `commit-git-env` 로 거부한다(과탐, fail-closed). 할당을 그 문장에만
    묶는 수정이 후보다.
 3. **메시지 줄**: 여러 줄 `-m "…` 본문에 `git commit` 으로 시작하는 줄이 있으면 토큰화 실패 줄의 폴백이 그 줄을 둘째 호출로 세어 `commit-multiple`

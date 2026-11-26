@@ -3169,6 +3169,13 @@ commit-git-env|echo '<<' true\nGIT_DIR=/x/.git git -C $HD $CM -m x\ntrue
 commit-git-env|cat <<EOF >/dev/null\n\`GIT_DIR=/x/.git git -C $HD $CM -m x\`\nEOF
 commit-multiple|git -C $HD $CM -m x\ncat <<'EOF' | bash\ngit -C $HD $CM -m y\nEOF
 commit-nested-shell|cat <<'EOF' | bash\nbash -c 'git -C $HD $CM -m y'\nEOF
+commit-multiple|git -C $HD $CM -m x\ncat <<'EOF' | bash; true\ngit -C $HD $CM -m y\nEOF
+commit-multiple|git -C $HD $CM -m x\n(cat <<'EOF' | bash)\ngit -C $HD $CM -m y\nEOF
+commit-multiple|git -C $HD $CM -m x\ncat <<'EOF' > >(bash)\ngit -C $HD $CM -m y\nEOF
+commit-multiple|git -C $HD $CM -m x\ncat <<'EOF' | bash&& true\ngit -C $HD $CM -m y\nEOF
+commit-multiple|git -C $HD $CM -m x\ncat <<'EOF' \0134\n| bash\ngit -C $HD $CM -m y\nEOF
+commit-nested-shell|cat <<'EOF' | bash; true\nbash -c 'git -C $HD $CM -m y'\nEOF
+commit-multiple|git -C $HD $CM -m x\ncat <<'EOF' | \$SHELL\ngit -C $HD $CM -m y\nEOF
 HXEOF
 # 작성자·날짜 변수, 따옴표·메시지·히어독 안의 커밋 글, 커밋 없는 중첩 셸은 지금처럼 판정한다 — 영수증 검증까지 가거나(게이트 실행 기록 없음)
 # 판정 대상이 아니다. 우회 할당도 그대로 우회다. 개수에서 빠진 줄(가짜 따옴표 히어독 뒤)의 유일한 커밋도 판정은 받고,
