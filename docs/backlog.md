@@ -904,6 +904,29 @@ grep -n 'hj.exists()' make-harness-view.sh                                    # 
 
 이관: 2026-11-26 오버레이 백로그에서.
 
+### 커밋 판정의 남은 갈래 — 가짜 히어독·문장 범위·문자열 실행 명령
+`hooks/preflight-gate.sh` `commit_verdict` · 2026-11-26 (`commit-multiple`·`commit-git-env`·`commit-nested-shell` 도입 리뷰에서)
+
+세 거부를 넣은 뒤에도 남는 갈래다. 앞의 셋은 과탐이거나 직전 훅과 같은 판정으로 떨어지고, 넷째·다섯째는 그 전부터 있던 미탐이다.
+
+1. **가짜 히어독**: 따옴표 안 `"<<'X'"` 글 뒤에 `X` 줄이 오면 그 사이 줄의 커밋이 개수에서 빠져 `commit-multiple` 을 피한다. 직전 훅과 같은 첫 호출
+   판정으로 떨어진다. 재현: `echo "<<'true'"` / `git -C /a commit -m x` / `git -C /b commit -m y` / `true` (네 줄, 한 호출).
+2. **문장 범위**: 앞 문장의 일회성 할당 `GIT_PAGER=cat git log; git commit …` 도 `commit-git-env` 로 거부한다(과탐, fail-closed). 할당을 그 문장에만
+   묶는 수정이 후보다.
+3. **메시지 줄**: 여러 줄 `-m "…` 본문에 `git commit` 으로 시작하는 줄이 있으면 토큰화 실패 줄의 폴백이 그 줄을 둘째 호출로 세어 `commit-multiple`
+   이다(과탐). 거부 문구가 `-F - <<'EOF'` 히어독으로 넘기라고 안내한다.
+4. **문자열 실행 명령**: 문자열을 명령으로 실행하는 것 중 셸 단어 `-c`·`eval` 밖 — `su -c`·`script -c`·`$SHELL -c`·`python3 -c 'os.system(…)'`·
+   `ssh host '…'` — 은 판정하지 않는다. 그 전부터 있던 갈래다.
+5. **본문 글이 대상 레포를 정한다**: 따옴표 히어독 본문의 `git -C <B> commit` 글이 진짜 커밋보다 앞에 있으면 `first`·STRICT 매치가 B 를 잡아 B 의
+   영수증으로 A 커밋을 판정한다. 재현(해석 단계, `C_DIR=/b`): `cat > /a/n.md <<'EOF'` / `git -C /b commit -m y` / `EOF` / `git -C /a commit -m x`.
+   직전 훅도 같다(기존). 닫는 방법 후보: 대상 레포는 개수에 든 호출에서만 잡거나, 개수 밖 호출의 `-C` 가 다르면 `commit-multiple`.
+
+→ 닫는 방법: 실행 형태를 더 열거하지 않고 방향을 바꾸는 것을 검토한다 — **커밋 글이 든 토큰은 무해한 명령의 인자일 때만 받는다**(`echo`·`printf`,
+`git commit` 의 `-m`/`-F` 값 등 화이트리스트). 그 밖의 자리에 커밋 글이 있으면 거부한다. 「형태 차단은 열거 방향이 틀렸다」 와 같은 결론이다.
+**먼저 셀 것**: 관측 로그의 `commit-multiple`·`commit-git-env`·`commit-nested-shell` 거부 수(머지 뒤 일주일) — 과탐(1·2·3)이 얼마나 막는지.
+
+2026-11-26.
+
 ## 관측 중 — 데이터가 쌓이면 판단한다
 
 ### `hook-unavailable` 빈도
@@ -1040,80 +1063,24 @@ grep blame ls-files …`)를 두고 **그 밖의 것이 commit 앞에 오면 차
 
 이관: 2026-11-26 오버레이 백로그에서.
 
-### 한 명령 안의 커밋 호출은 첫 번째 하나만 판정된다
-훅은 `commit` 패턴의 **첫 매치** 하나에서 경로 해석 재료(`C_DIR`·`CD_DIR`)를 낸다. 같은 Bash
-호출에 커밋이 둘 이상 있으면 두 번째부터는 영수증 검증·형태 차단을 받지 않는다. 실행 파일을
-따옴표로 감싼 `"git"`·`'git'` 호출은 패턴이 못 읽어서, 그 앞에 평범한 커밋이 하나 있으면 그쪽만
-판정된다. 첫 호출에 `-C` 가 없으면 `C_DIR` 이 비어 cwd(또는 앞의 `cd`) 레포의 영수증으로
-판정된다 — 두 번째 호출이 가리키는 레포와 상관없다. 따옴표 git 단독이면 `commit-unparsed` 로
-거부되므로, 새는 것은 **앞에 판정 가능한 커밋이 있을 때**뿐이다.
-
-실측 2026-11-17, 2026-11-26 엔진 훅에서 같은 결과 재현(해석 단계만 떼어 돌림):
-
-| 명령 | 판정된 호출 | `C_DIR` |
-|---|---|---|
-| `git -C /a commit -m x && git -C /b commit -m y` | 앞의 것 | `/a` |
-| `git commit -m x && "git" -C /b commit -m y` | 앞의 것 | 빈 값(cwd) |
-| `git -C /a commit -m x && 'git' -C /b commit -m y` | 앞의 것 | `/a` |
-| `cd /a && git commit -m x && cd /b && git commit -m y` | 앞의 것 | 빈 값(`CD_DIR=/a`) |
-
-재현 — 지금 훅이 이 명령 자체를 커밋으로 읽어 막지 않게 단어를 나눈다(스크립트 파일로 돌리는 편이 안전하다):
-```bash
-H=hooks/preflight-gate.sh; T=$(mktemp -d); CM="com""mit"
-awk '/^eval "\$\(CMD="\$CMD" python3 -c /{f=1;next} f&&/^. 2>\/dev\/null\)" 2>\/dev\/null \|\| exit 0/{f=0} f' "$H" > "$T/parse.py"
-CMD="git $CM -m x && \"git\" -C /b $CM -m y" python3 "$T/parse.py" | grep -v SUFFIX
-```
-
-**고칠 것**: 전역 옵션과 같은 방향으로 **넓히지 말고 거부**한다. `commit_calls` 가 이미 줄마다
-토큰으로 모든 커밋 호출을 센다 — 호출이 둘 이상이면 경로 해석 전에 `commit-multiple` 로 거부하고
-"한 Bash 호출에 커밋 하나" 를 안내한다. 호출마다 레포를 따로 풀어 영수증을 여럿 검증하는 쪽은
-`cd` 해석(위 절)을 호출마다 다시 하게 되어 같은 함정을 부른다. meta-test 에 위 네 형태 → deny
-단언을 같이 넣는다.
-
-**먼저 셀 것**: 거부하면 정상 사용도 막히는지. 2026-11-17 한 개발 머신의 세션 전사 Bash 호출 중 커밋이 든 것
-1466건, 커밋이 둘 이상 든 것 13건(대부분 임시 픽스처 레포를 만드는 스크립트), 실행 파일을 따옴표로 감싼 git
-커밋 2건(정규식 근사 셈). 고친 뒤에는 관측 로그의 `commit-multiple` 거부 수를 센다 — 픽스처 스크립트가
-대부분이면 안내 문구에 "픽스처 레포의 커밋은 스크립트 파일로 돌려라" 를 넣는다.
-
-이관: 2026-11-26 오버레이 백로그에서.
-
-### 환경변수·중첩 셸로 대상 레포를 바꾸는 커밋은 거부되지 않는다
-전역 옵션 거부(`commit-global-option`)는 `git` 과 `commit` **사이**의 옵션만 본다. 같은 일을
-하는 다른 두 형태는 그대로 지나간다:
-
-- `GIT_DIR=/other/.git git -C <repo> commit …` — 토큰 판정에서 `-C` 뿐이라 정상 커밋이다.
-  `<repo>` 의 영수증으로 검증되지만 커밋은 `GIT_DIR` 쪽 레포에 들어간다.
-  `GIT_WORK_TREE`·`GIT_CONFIG_*`(`GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n` 로 `-c` 와 같은 효과)도 같다.
-- `bash -c 'git --git-dir=… commit …'` — 따옴표 안이라 커밋으로 보지 않는다(판정 없음).
-  따옴표 안 글을 커밋으로 보지 않는 것은 의도된 동작이라(`echo "git -c a commit"` 과 구별하지 못한다)
-  이쪽은 토큰 판정만으로는 닫히지 않는다.
-
-2026-11-26 엔진 훅의 해석 단계에서 재현: `GIT_DIR=` 형태는 `kind=commit`·`C_DIR=<repo>`, `bash -c` 형태는
-`kind=""`(판정 없음). 훅에 `GIT_` 접두를 보는 자리는 없다.
-
-**고칠 것**: 첫 형태는 커밋 호출 앞의 `NAME=value` 토큰 중 이름이 `GIT_` 로 시작하는 것이 있으면
-`commit-global-option` 과 같이 거부한다 — `commit_calls` 가 git 토큰 바로 앞을 보면 된다.
-`PREFLIGHT_SKIP=` 은 이미 따로 처리하므로 `GIT_` 접두만 본다. 둘째 형태는 `sh|bash|zsh -c` 의
-인자를 한 번 더 토큰화해 같은 판정을 거는 쪽과, 중첩 셸 안 커밋을 통째로 거부하는 쪽 중 고른다.
-
-**먼저 셀 것**: 실제 사용 빈도. 2026-11-17 한 개발 머신의 세션 전사 Bash 호출에서
-`GIT_DIR`·`GIT_WORK_TREE`·`GIT_CONFIG*` 접두 커밋 0건, `sh|bash|zsh -c '…git … commit…'` 0건(정규식
-근사 셈). 정상 사용이 없으니 거부해도 막히는 것이 없다 — 남은 판단은 구현 비용뿐이다.
-
-이관: 2026-11-26 오버레이 백로그에서.
-
 ### 대상 레포 해석 재료가 아직 정규식이다
 커밋 호출은 토큰으로 찾지만(`commit_calls`), 대상 레포를 정하는 재료(`C_DIR`·`CD_DIR`·`SUFFIX`)는
 여전히 명령 전체에 건 STRICT 정규식의 **첫 매치**에서 나온다. 두 판정이 다른 호출을 보는 틈은
 지금 `-C` 값 대조로만 막는다 — 값이 다르면 `commit-unparsed`. **같은 호출인지는 보지 않는다.**
 둘 다 `-C` 가 없으면 값이 같아(빈 값) 대조를 지나고, `CD_DIR` 은 가짜 매치 앞에서 잘린다.
 
-실측 2026-11-17, 2026-11-26 엔진 훅의 해석 단계에서 재현(`C_DIR=''`, `CD_DIR=''`): 아래 명령은 cwd 레포에 대한
+실측 2026-11-17, 2026-11-26 엔진 훅의 해석 단계에서 재현(`C_DIR=''`, `CD_DIR=''` — 여러 커밋 거부(`commit-multiple`)를 넣은 뒤에도 같다.
+따옴표 안 글은 호출로 세지 않으므로 커밋 호출은 하나다): 아래 명령은 cwd 레포에 대한
 일반 검증으로 넘어간다. 실제 커밋은 `/other` 에서 난다.
 ```
 echo "; git commit "; cd /other; git commit -m x
 ```
-재현은 위 「한 명령 안의 커밋 호출은 …」 절의 해석 단계 추출 명령에 이 문자열을 넣으면 된다.
+재현 — 훅의 해석 단계만 떼어 돌린다. 지금 훅이 이 명령 자체를 커밋으로 읽어 막지 않게 단어를 나눈다(스크립트 파일로 돌리는 편이 안전하다):
+```bash
+H=hooks/preflight-gate.sh; T=$(mktemp -d); CM="com""mit"
+awk '/^eval "\$\(CMD="\$CMD" python3 -c /{f=1;next} f&&/^. 2>\/dev\/null\)" 2>\/dev\/null \|\| exit 0/{f=0} f' "$H" > "$T/parse.py"
+CMD="echo \"; git $CM \"; cd /other; git $CM -m x" python3 "$T/parse.py" | grep -v SUFFIX
+```
 
 같은 부류가 한 PR 리뷰에서 세 번 연달아 나왔다(2026-11-17): 전역 옵션 폴백이 앞 호출에 가려짐 →
 STRICT 가 메시지 안 글을 잡음 → 값 대조가 같은 호출을 보장하지 못함. 위 「형태 차단은 열거 방향이 틀렸다」 가
@@ -1133,6 +1100,22 @@ STRICT 정규식은 경로 해석에서 뺀다. 토큰화가 안 되는 줄(여�
 ---
 
 ## 닫힘
+
+### 한 명령 안의 커밋 호출은 첫 번째 하나만 판정된다 — 닫힘 (2026-11-26)
+훅은 경로 해석 재료(`C_DIR`·`CD_DIR`)를 첫 커밋 호출 하나에서만 냈다. 같은 Bash 호출의 둘째 커밋(`git -C /a commit && git -C /b commit`, 따옴표 친
+`"git"`·`'git'`, `cd` 로 갈아탄 둘째 커밋)은 첫 호출의 영수증으로 판정됐다.
+
+닫힘: 넓히지 않고 거부 — `commit_verdict` 가 명령 전체(토큰 판정 줄 + 토큰화 실패 줄 폴백)의 커밋 호출을 세어 2개 이상이면 경로 해석 전에
+`commit-multiple` 로 거부하고 "한 Bash 호출에 커밋은 하나만 · 픽스처 스크립트는 파일로" 를 안내한다. 2026-11-01~26 전사 869건 중 해당 26건은 직전 훅에서도
+모두 다른 사유로 거부되던 것이다. `skills/preflight/DECISIONS.md` 2026-11-26 「한 호출 안의 여러 커밋·…」, 회귀 `meta-test/engine.sh` 「deny 하는 자리는 전부 기록된다」.
+
+### 환경변수·중첩 셸로 대상 레포를 바꾸는 커밋은 거부되지 않는다 — 닫힘 (2026-11-26)
+`GIT_DIR=… git -C <repo> commit` 은 `-C` 레포의 영수증으로 통과하고 커밋은 다른 레포에 들어갔다(`GIT_WORK_TREE`·`GIT_INDEX_FILE`·`GIT_CONFIG_*` 도 같다).
+`bash -c '…commit…'`·`eval` 안 커밋은 따옴표 안이라 판정 자체가 없었다.
+
+닫힘: 커밋 앞 `GIT_*=` 할당은 `commit-git-env` 로 거부한다 — 작성자·날짜 변수 6개만 받는 화이트리스트(실사용 4건이 전부 이것). `sh|bash|zsh|dash|ksh` 의
+`-c` 인자와 `eval` 인자는 다시 토큰화해(깊이 상한 3) 커밋이 있으면 `commit-nested-shell` 로 거부한다. `su -c`·`script -c` 등은 보지 않는다(한계).
+`skills/preflight/DECISIONS.md` 2026-11-26 같은 절, 회귀 `meta-test/engine.sh` 같은 절.
 
 ### 프로필 영향도가 커밋 제목 형식에 기댄다 — 닫힘 (2026-11-25)
 `profile-measure.sh` 의 수정 커밋 판정 `FIX_RE`(126행)는 제목만 본다 — `fix`/`hotfix`/`revert` conventional 제목과
