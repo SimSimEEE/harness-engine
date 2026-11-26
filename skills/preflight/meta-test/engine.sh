@@ -3126,6 +3126,10 @@ _pr="$(hookdeny "/usr/bin/git -C $HD $CM -m x")"
 _pr="$(hookdeny "git -C $HD $CM -m x")"
 [ -n "$_pr" ] && [ "$_pr" != "commit-global-option" ] && ok "\`git -C <경로> commit\` 은 전역 옵션 거부에 걸리지 않는다 [$_pr]" \
   || ng "\`git -C <경로> commit\` 판정이 바뀌었다" "commit-global-option 이 아님 [$_pr]"
+# 판정 python 블록은 bash 의 "$( … )" 안에 있다 — 블록 안에 `$(` 글이 있으면 macOS bash 3.2 가 짝 괄호로 읽어 훅 전체가 깨진다.
+_pyb=$(awk '/^eval "\$\(CMD="\$CMD" python3 -c /{f=1;next} f&&/^. 2>\/dev\/null\)" 2>\/dev\/null \|\| exit 0/{f=0} f' "$HK")
+[ -n "$_pyb" ] && ! printf '%s' "$_pyb" | grep -qF '$(' && ok "훅의 판정 python 블록에 \`\$(\` 글이 없다" \
+  || ng "훅의 판정 python 블록을 못 찾았거나 \`\$(\` 글이 있다 ($(printf '%s' "$_pyb" | grep -nF '$(' | head -1 | cut -c1-60))" "블록 있음 · \`\$(\` 0"
 # 한 호출 안의 여러 커밋·커밋 앞 GIT_ 환경변수·중첩 셸 안 커밋 — 경로 해석 전에 거부한다.
 # 넓히지 않고 거부한다: 둘째 호출·GIT_DIR·`bash -c` 안 커밋은 대상 레포 해석 재료에 잡히지 않는다.
 for _mx in "git -C /a $CM -m x && git -C /b $CM -m y" "git $CM -m x && \"git\" -C /b $CM -m y" \
@@ -3176,6 +3180,14 @@ commit-multiple|git -C $HD $CM -m x\ncat <<'EOF' | bash&& true\ngit -C $HD $CM -
 commit-multiple|git -C $HD $CM -m x\ncat <<'EOF' \0134\n| bash\ngit -C $HD $CM -m y\nEOF
 commit-nested-shell|cat <<'EOF' | bash; true\nbash -c 'git -C $HD $CM -m y'\nEOF
 commit-multiple|git -C $HD $CM -m x\ncat <<'EOF' | \$SHELL\ngit -C $HD $CM -m y\nEOF
+commit-multiple|git -C $HD $CM -m x\nbash<<'EOF'\ngit -C $HD $CM -m y\nEOF
+commit-multiple|git -C $HD $CM -m x\n/bin/bash<<'EOF'\ngit -C $HD $CM -m y\nEOF
+commit-multiple|git -C $HD $CM -m x\ncat <<'EOF' >$HD/x.sh; sh $HD/x.sh\ngit -C $HD $CM -m y\nEOF
+commit-multiple|git -C $HD $CM -m x\ncat <<'EOF' >$HD/x.sh; $HD/x.sh\ngit -C $HD $CM -m y\nEOF
+commit-multiple|cat > $HD/f <<'EOF'\ngit -C $HD $CM -m y\nEOF\ngit -C $HD $CM -m x
+commit-multiple|git -C $HD $CM -m "\$(cat <<'EOF' >$HD/x.sh; chmod +x $HD/x.sh; $HD/x.sh; echo msg\ngit -C $HD $CM -m y\nEOF\n)"
+commit-multiple|git -C $HD $CM -F - <<'EOF' && sh $HD/x.sh\ngit -C $HD $CM -m y\nEOF
+commit-multiple|git -C $HD $CM -F - <<'EOF' && $HD/x.sh\ngit -C $HD $CM -m y\nEOF
 HXEOF
 # 작성자·날짜 변수, 따옴표·메시지·히어독 안의 커밋 글, 커밋 없는 중첩 셸은 지금처럼 판정한다 — 영수증 검증까지 가거나(게이트 실행 기록 없음)
 # 판정 대상이 아니다. 우회 할당도 그대로 우회다. 개수에서 빠진 줄(가짜 따옴표 히어독 뒤)의 유일한 커밋도 판정은 받고,
