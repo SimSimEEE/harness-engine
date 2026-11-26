@@ -94,29 +94,8 @@ ENV_RX = WB + r"(GIT_[A-Za-z0-9_]*)="
 SHELL_ALT = "sh|bash|zsh|dash|ksh|fish|csh|tcsh"
 NEST_RX = WB + r"(?:(?:\S*/)?(?:" + SHELL_ALT + r")(?=\s)[^;&|()" + chr(10) + r"]*?\s-[A-Za-z]*c[A-Za-z]*(?=\s|$)|eval(?=\s))"
 LOOSE_CALL = r"git" + QC + r"\s+(?:[^;&|]*?\s)?" + QC + r"commit(?![A-Za-z0-9_-])"
-# 따옴표 구분자 히어독(`<<"X"` 꼴, `<<-` 포함)의 본문은 확장되지 않는 글이다. 여는 줄이 **커밋 메시지를 넘기는 두 형태**일 때만
-# 그 본문 줄을 커밋 호출 개수와 중첩 셸 판정에서 뺀다 — 메시지 안의 `git commit`·`bash -c "…"` 글이 둘째 호출·중첩 커밋으로
-# 읽히지 않게. 전역 옵션·해석 불가·`GIT_` 환경변수 판정은 그대로 건다. 그 밖의 여는 줄(`cat > f <<X` 포함)은 본문을 센다.
-#   (a) `git … commit … -m` 값의 명령 치환 안 `cat <<X` — 표준 메시지 형태다. 명령 치환은 이 형태 때문에 받는다.
-#   (b) `git … commit … -F - <<X`(`--file=-`·`--file -`)
-# 두 형태 모두 커밋 호출 앞에는 `cd <경로> &&` 와 환경변수 할당만 올 수 있고, 히어독 토큰 뒤는 줄 끝까지 공백뿐이어야 한다
-# (리다이렉트·`;`·`&&`·다른 단어가 오면 본문을 파일로 써서 실행할 수 있다). 여기에 더해 여는 논리 줄(`\` 줄잇기를 이은 것)이
-# `\` 로 끝나지 않고, 어디에도(따옴표 안 포함) `|`·`>(`·`<(` 와 셸 단어·`eval`·`source`·`.` 가 없어야 한다. 모호하면 센다.
-HD_RX = (r"(?<!<)<<(?!<)(-?)\s*(?:" + chr(39) + r"([^" + chr(39) + r"]+)" + chr(39) + r"|" + chr(34) + r"([^" + chr(34) + r"]+)" + chr(34)
-         + r"|\\([A-Za-z0-9_.-]+)|([A-Za-z0-9_.-]+))")
-HD_RUN_RX = (r"[|]|>\(|<\(|(?:^|(?<=[\s;&|()" + BQ + chr(34) + chr(39) + r"]))(?:[^\s;&|()]*/)?(?:" + SHELL_ALT
-             + r"|eval|source|\.)(?=[\s;&|()<>" + BQ + chr(34) + chr(39) + r"]|$)")
-HD_LEAD = (r"\s*(?:cd\s+" + Q + r"\s*&&\s*)?(?:[A-Za-z_][A-Za-z0-9_]*=(?:" + chr(34) + r"[^" + chr(34) + r"]*" + chr(34) + r"|"
-           + chr(39) + r"[^" + chr(39) + r"]*" + chr(39) + r"|\S*)\s+)*(?:\S*/)?git\s+(?:-C\s+" + Q + r"\s+)?commit\s")
-HD_MSG_SUB = r"[^;&|" + chr(10) + r"]*\s" + QC + r"\$\(cat\s+$"
-HD_MSG_FILE = r"(?=[^;&|" + chr(10) + r"]*(?:^|\s)(?:-F\s*-|--file=-|--file\s+-)\s)[^;&|" + chr(10) + r"]*\s$"
-def message_opener(pre):
-    # pre: 여는 논리 줄에서 `<<` 앞까지. (a)·(b) 꼴이면 참.
-    m = re.match(HD_LEAD, pre)
-    if not m:
-        return False
-    args = pre[m.end() - 1:]
-    return bool(re.match(HD_MSG_SUB, args) or re.match(HD_MSG_FILE, args))
+# 히어독 본문도 다른 줄과 똑같이 명령 줄로 센다(개수·중첩 판정 포함). 셸 따옴표를 정규식으로 흉내 내 메시지 본문만 빼는 규칙은
+# 매번 그 흉내를 속이는 형태가 나왔다. 메시지 글에 커밋 글이 있으면 거부되고, 메시지는 `-F <파일>` 로 넘기면 된다.
 def tokens(line):
     lx = shlex.shlex(line, posix=True, punctuation_chars=True)
     lx.whitespace_split = True
@@ -154,9 +133,8 @@ def nested_arg_text(tail):
             w = re.match(r"[^\s;&|()" + chr(34) + chr(39) + r"]+", tail[k:])
             out.append(w.group(0)); k += w.end()
     return chr(10).join(out)
-def commit_calls(toks, depth, st, nest=True):
+def commit_calls(toks, depth, st):
     # 토큰 한 줄에서 커밋 호출의 git…commit 사이 옵션 목록을 낸다. 환경변수·중첩 셸 판정은 st 에 쌓는다.
-    # nest=False 면 중첩 셸 판정을 하지 않는다(따옴표 히어독 본문 — 아래 scan).
     out, i = [], 0
     while i < len(toks):
         t = toks[i]
@@ -166,9 +144,7 @@ def commit_calls(toks, depth, st, nest=True):
         if m and bad_env(m.group(1)):
             st["env"] = True
         arg = None
-        if not nest:
-            pass
-        elif b == "eval":
+        if b == "eval":
             j, parts = i + 1, []
             while j < len(toks) and not is_sep(toks[j]):
                 parts.append(toks[j]); j += 1
@@ -196,36 +172,9 @@ def commit_calls(toks, depth, st, nest=True):
                 st["gitenv"] = True
         i = max(j, i + 1)
     return out
-def uncounted_lines(lines):
-    # 개수·중첩 판정에서 뺄 따옴표 히어독 본문의 줄 번호. 구분자 판정은 줄 글의 정규식 근사다 — (a)·(b) 꼴 커밋 인자 글 안의
-    # `<<X` 에 속으면 그 사이 줄의 커밋이 개수와 중첩 판정에서 빠진다(옛 훅과 같은 첫 호출 판정). 형태·`GIT_` 환경변수 판정은 그대로다.
-    skip, i = set(), 0
-    while i < len(lines):
-        nxt = i + 1
-        start = i
-        while start > 0 and lines[start - 1].endswith(chr(92)):
-            start -= 1
-        opener = chr(10).join(lines[start:i + 1])
-        shell = lines[i].endswith(chr(92)) or bool(re.search(HD_RUN_RX, opener))
-        for m in re.finditer(HD_RX, lines[i]):
-            dash = m.group(1) == "-"
-            delim = next(g for g in m.groups()[1:] if g is not None)
-            end = next((k for k in range(nxt, len(lines))
-                        if (lines[k].lstrip(chr(9)) if dash else lines[k]) == delim), None)
-            if end is None:
-                break
-            pre = opener[:len(opener) - len(lines[i]) + m.start()]
-            if (m.group(5) is None and not shell and message_opener(pre)
-                    and re.fullmatch(r"\s*", lines[i][m.end():])):
-                skip.update(range(nxt, end))
-            nxt = end + 1
-        i = nxt
-    return skip
 def scan(text, depth, st):
     lines = text.split(chr(10))
-    skip = uncounted_lines(lines)
     for i, line in enumerate(lines):
-        cnt = 0 if i in skip else 1
         try:
             toks = tokens(line)
         except ValueError:
@@ -238,7 +187,7 @@ def scan(text, depth, st):
                 pre = line[g.start() - 1] if g.start() else ""
                 sm = re.match(STRICT_CALL, rest)
                 if (pre == "" or pre in ";&|" or pre.isspace()) and sm:
-                    st["n"] += cnt
+                    st["n"] += 1
                     if st["first"] is None:
                         st["first"] = unq(sm.group("cdir"))
                     if st["env"] or any(bad_env(e) for e in re.findall(ENV_RX, line[:g.start()])):
@@ -251,12 +200,12 @@ def scan(text, depth, st):
             if any(bad_env(e) for e in re.findall(ENV_RX, line)):
                 st["env"] = True
             # 여러 줄에 걸친 `-c` 인자는 줄 단위로 다시 풀 수 없다 — 옵션 뒤 인자 글(nested_arg_text)에 커밋 글이 있으면 중첩 커밋으로 본다.
-            for m in (re.finditer(NEST_RX, line) if cnt else ()):
+            for m in re.finditer(NEST_RX, line):
                 if re.search(LOOSE_CALL, nested_arg_text(line[m.end():] + chr(10) + chr(10).join(lines[i + 1:])), re.S):
                     st["nested"] = True
         else:
-            for mid in commit_calls(toks, depth, st, nest=bool(cnt)):
-                st["n"] += cnt
+            for mid in commit_calls(toks, depth, st):
+                st["n"] += 1
                 if mid and not (len(mid) == 2 and mid[0] == "-C"):
                     st["verdict"] = st["verdict"] or "commit-global-option"
                 elif st["first"] is None:
@@ -281,8 +230,7 @@ def commit_verdict(cmd):
         return "commit-nested-shell", st["first"]
     if st["gitenv"]:
         return "commit-git-env", st["first"]
-    # 개수에서 뺀 따옴표 히어독 본문의 호출도 판정 대상이다(first 가 그 호출에서 설 수 있다) — 빼면 커밋이 없는 명령이 된다.
-    return ("commit-seen" if st["first"] is not None else ""), st["first"]
+    return ("commit-seen" if st["n"] else ""), st["first"]
 cv, cv_dir = commit_verdict(cmd)
 REJECTS = ("commit-global-option", "commit-unparsed", "commit-multiple", "commit-nested-shell", "commit-git-env")
 PATS = (("commit", STRICT),
@@ -390,7 +338,7 @@ fi
 if [ "$kind" = "commit-multiple" ]; then
     kind=commit
     pf_hook_log denied "commit-multiple"
-    REASON="한 Bash 호출에 커밋은 하나만. 이 명령에는 \`git commit\` 호출이 둘 이상 있다 — 게이트는 한 호출의 대상 레포만 검증하므로 나머지는 검사 없이 다른 레포에 커밋될 수 있어 거부한다. 커밋마다 별도 Bash 호출로 실행해라. 픽스처 레포를 여러 번 커밋하는 스크립트는 파일로 써서 돌려라. 메시지 본문에 \`git commit\` 글이 있어 걸렸다면 메시지를 \`-F - <<'EOF'\` 히어독으로 넘겨라."
+    REASON="한 Bash 호출에 커밋은 하나만. 이 명령에는 \`git commit\` 호출이 둘 이상 있다 — 게이트는 한 호출의 대상 레포만 검증하므로 나머지는 검사 없이 다른 레포에 커밋될 수 있어 거부한다. 커밋마다 별도 Bash 호출로 실행해라. 픽스처 레포를 여러 번 커밋하는 스크립트는 파일로 써서 돌려라. 메시지 본문에 \`git commit\` 글이 있어 걸렸다면 메시지를 파일로 써서 \`-F <파일>\` 로 넘겨라(히어독 본문도 명령 줄로 센다)."
     pf_deny "$REASON"
     exit 0
 fi

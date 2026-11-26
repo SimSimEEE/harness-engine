@@ -3189,35 +3189,34 @@ commit-multiple|git -C $HD $CM -m "\$(cat <<'EOF' >$HD/x.sh; chmod +x $HD/x.sh; 
 commit-multiple|git -C $HD $CM -F - <<'EOF' && sh $HD/x.sh\ngit -C $HD $CM -m y\nEOF
 commit-multiple|git -C $HD $CM -F - <<'EOF' && $HD/x.sh\ngit -C $HD $CM -m y\nEOF
 HXEOF
-# 작성자·날짜 변수, 따옴표·메시지·히어독 안의 커밋 글, 커밋 없는 중첩 셸은 지금처럼 판정한다 — 영수증 검증까지 가거나(게이트 실행 기록 없음)
-# 판정 대상이 아니다. 우회 할당도 그대로 우회다. 개수에서 빠진 줄(가짜 따옴표 히어독 뒤)의 유일한 커밋도 판정은 받고,
-# 토큰화 안 되는 줄의 `eval "…"` 은 짝 따옴표까지만 중첩 인자로 본다(뒤 줄의 진짜 커밋을 중첩으로 오인하지 않게).
-# 따옴표 히어독 메시지 안의 `bash -c 'git commit'`·`eval git commit` 글은 중첩 셸로 보지 않는다(셸이 읽지 않는 본문).
+# 작성자·날짜 변수, 한 줄 메시지 안의 커밋 글, 커밋 없는 중첩 셸은 지금처럼 판정한다 — 영수증 검증까지 가거나(게이트 실행 기록 없음)
+# 판정 대상이 아니다. 우회 할당도 그대로 우회다. 토큰화 안 되는 줄의 `eval "…"` 은 짝 따옴표까지만 중첩 인자로 본다
+# (뒤 줄의 진짜 커밋을 중첩으로 오인하지 않게). 메시지를 파일로 넘기는 `-F <파일>` 은 메시지 글과 상관없이 영수증 검증으로 간다.
 for _ok in "GIT_COMMITTER_DATE='2026-01-01T00:00:00' git -C $HD $CM -m x" "GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e git -C $HD $CM -m x" \
-           "git -C $HD $CM -m \"fix git $CM twice\"" \
-           "git -C $HD $CM -F - <<'EOF'
-fix git $CM twice
-EOF" "git -C $HD $CM -m \"\$(cat <<'EOF'
-fix git $CM twice
-don't
-EOF
-)\"" "echo \"<<'X'\"
+           "git -C $HD $CM -m \"fix git $CM twice\"" "git -C $HD $CM -F $HD/msg.txt" "echo \"<<'X'\"
 git -C $HD $CM -m x
 X" "cat > $HD/f <<'EOF'
 run ( eval \"\$(f)\" ) it's
 EOF
-git -C $HD $CM -m x" "git -C $HD $CM -m \"\$(cat <<'EOF'
-Reject commits nested in bash -c 'git $CM'
-EOF
-)\"" "git -C $HD $CM -F - <<'EOF'
-deny eval git $CM too
-EOF" "git -C $HD $CM -F - <<'EOF'
-don't wrap in bash -c 'git $CM'
-EOF"; do
+git -C $HD $CM -m x"; do
   _pr="$(hookdeny "$_ok")"
   case "$_pr" in *"게이트 실행 기록 없음"*) ok "단일 커밋은 영수증 검증으로 간다 [$(printf '%s' "$_ok" | head -1 | cut -c1-45)]";;
     *) ng "단일 커밋이 새 거부에 걸리거나 검증까지 못 간다 [$(printf '%s' "$_ok" | head -1 | cut -c1-45)]" "게이트 실행 기록 없음 [$_pr]";; esac
 done
+# 히어독 본문도 명령 줄로 센다 — 메시지 본문의 `git commit`·`bash -c 'git commit'`·`eval git commit` 글은 거부된다(의도된 과탐,
+# 우회는 `-F <파일>`). 셸 따옴표를 흉내 내 메시지 본문만 빼는 규칙은 다섯 번 뚫려 두지 않는다(DECISIONS.md 2026-11-26).
+while IFS='|' read -r _want _mb; do
+  _mb="$(printf '%b' "$_mb")"
+  _pr="$(hookdeny "$_mb")"
+  [ "$_pr" = "$_want" ] && ok "히어독 메시지 본문의 커밋 글도 명령으로 센다 [$_want: $(printf '%s' "$_mb" | tr '\n' '/' | cut -c1-45)]" \
+    || ng "히어독 메시지 본문의 커밋 글이 판정을 빠져나간다 [$(printf '%s' "$_mb" | tr '\n' '/' | cut -c1-45)]" "$_want [$_pr]"
+done <<MBEOF
+commit-multiple|git -C $HD $CM -F - <<'EOF'\nfix git $CM twice\nEOF
+commit-multiple|git -C $HD $CM -m "\$(cat <<'EOF'\nfix git $CM twice\ndon't\nEOF\n)"
+commit-nested-shell|git -C $HD $CM -m "\$(cat <<'EOF'\nReject commits nested in bash -c 'git $CM'\nEOF\n)"
+commit-multiple|git -C $HD $CM -F - <<'EOF'\ndeny eval git $CM too\nEOF
+commit-nested-shell|git -C $HD $CM -F - <<'EOF'\ndon't wrap in bash -c 'git $CM'\nEOF
+MBEOF
 for _no in "echo \"git $CM; git $CM\"" "bash -c 'git status'" "bash --rcfile /dev/null -c -- 'git status'"; do
   _pr="$(hookdeny "$_no")"
   [ -z "$_pr" ] && ok "커밋 아닌 명령은 판정하지 않는다 [$_no]" || ng "커밋 아닌 명령이 거부된다 [$_no]" "판정 없음 [$_pr]"
