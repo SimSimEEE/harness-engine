@@ -712,25 +712,41 @@ a=70 a_sessions=13 b=62 main=202 home=45 norepo=78 path_outside_repo=9
   줄잇기 규칙을 흉내 내지 않기 위해서다. 원문만 보면 `bash -c \⏎'…'`·`bash \⏎-c '…'`·`eval \⏎'…'` 의 인자가 다음 줄로 넘어가 중첩 셸·여러 커밋
   판정을 빠져나갔고(PR 게이트 리뷰), 합친 글만 보면 짝수 개 백슬래시(`echo a\\⏎`)나 주석 안 `\⏎`(`… # note \⏎`) 가 다음 줄 커밋을 앞 단어·주석에
   붙여 삼켰다(커밋 게이트 리뷰 두 번). 중첩 셸 인자 글도 같은 두 판정을 거친다. 경로 해석용 STRICT 정규식(명령 전체)은 그대로다.
+- **토큰화 실패 줄**: shlex 가 못 읽는 줄(여러 줄 `-m "…"` 같은 여러 줄 따옴표)은 셸 문법을 정규식으로 흉내 내지 않고, 위험 글이 보이면 거부한다.
+  명령 전체에 커밋 글(`git`·`commit` 앞뒤 따옴표 허용)이 있으면, 실패 줄부터 끝까지의 글에서 — 단어 경계·따옴표와 무관하게 — 허용 밖
+  `GIT_*=`(따옴표 허용) → `commit-git-env`, 셸 단어·변수 확장 단어 뒤 c 옵션 뒤의 커밋 글 또는 `eval` 뒤의 커밋 글 → `commit-nested-shell`,
+  명령 전체의 커밋 글 둘 이상 → `commit-multiple`. 커밋 글(`git … commit`)과 셸 단어~`-c` 는 **한 줄 안에서만** 찾는다 — 셸 `-c` 뒤의 커밋 글은
+  다음 줄이어도 된다(여러 줄 따옴표 인자). 첫 판은 줄을 넘어 맞아서, 여러 줄 메시지에 `git`·`commit` 단어가 다른 줄에 있기만 해도 정상 단일
+  커밋을 `commit-multiple` 로 막았다(커밋 게이트 리뷰가 재현). 그 줄의 GITPOS·ENV_RX·NEST_RX 폴백은 단어 경계 뒤보기라 `env "GIT_DIR=…"`·`export 'GIT_DIR'=…`·
+  `"bash" -c "…"`·`'sh' -c`·`"git" -C … commit` 을 못 읽어 세 거부를 모두 피했다(PR 게이트 리뷰가 재현). 폴백 판정은 남겨 두고 이 검사를 더한다.
+  이 검사는 **커밋 명령에만** 건다 — 원문·줄잇기 합친 판정 중 하나라도 토큰·GITPOS 로 센 커밋 호출이나 형태 거부가 있거나, 경로 해석용
+  STRICT 정규식(명령 전체)이 맞을 때. 조건 없이 걸었던 판은 재생에서 커밋 호출이 없는 편집·테스트 스크립트(히어독 본문에 meta-test 용 커밋 글
+  둘 이상) 33건을 새로 막았다(사용자 결정으로 조건을 둠). 그래서 앞 커밋 없는 단독 `"bash" -c "…여러 줄…"` 은 옛 훅처럼 판정하지 않는다.
+  대가: 커밋 명령의 여러 줄 메시지·히어독 본문에 그런 글이 있으면 거부된다(메시지 글 과탐과 같은 부류, 우회는 `-F <파일>`). 따옴표 히어독
+  본문의 `eval "…"` 뒤 진짜 단일 커밋도 `commit-nested-shell` 로 거부된다(받아들인 과탐, 회귀 단언에 둔다).
 - **한계**: 중첩 셸은 셸 단어 여덟(`sh|bash|zsh|dash|ksh|fish|csh|tcsh`)·변수 확장 명령 단어의 c 옵션 인자와 `eval` 만 본다. 문자열을 명령으로
   실행하는 그 밖의 것 — `su -c`·`script -c`·`xargs`·`python3 -c 'os.system(…)'`·`ssh host '…'`·`bash <<<` — 은 보지 않는다.
   c 옵션이 있는 셸 호출은 그 뒤 인자 전부를 보므로 `bash -c 'echo $0' 'git commit'` 처럼 명령 문자열이 아닌 인자의 커밋 글도 중첩으로 거부한다(과탐, 거부 쪽).
   `echo "git commit"` 처럼 셸·eval 이 아닌 명령의 인자 글은 지금처럼 판정하지 않는다. 메시지 본문의 커밋 글은 거부된다(위, 과탐 — 우회는
   `-F <파일>`). 남은 갈래는 docs/backlog.md 「커밋 판정의 남은 갈래 — …」.
-- **재생(2026-11-01~26 전사, 커밋 글이 든 Bash 호출 4212건, 직전 훅 대비)**: allow→deny 0, deny→allow 0. 사유만 바뀐 것 19건 — 해석 불가 경로·해석 불가 형태·영수증
-  미통과로 막히던 여러 커밋 명령이 `commit-multiple` 로 막힌다.
-- **회귀**: `meta-test/engine.sh` 「deny 하는 자리는 전부 기록된다」 69개(가드 1 포함). deny 57형태는 사유 로그까지 본다 — 여러 커밋 5(백로그 4형태·두 줄 두 커밋),
+- **재생(2026-11-01~27 전사, 커밋 글이 든 Bash 호출 4263건, 직전 훅 대비)**: allow→deny 0, deny→allow 0. 사유만 바뀐 것 29건(모두 deny 그대로) —
+  해석 불가 경로·해석 불가 형태·영수증 미통과로 막히던 여러 커밋·중첩 셸 명령이 `commit-multiple`·`commit-nested-shell` 로 막힌다.
+  토큰화 실패 줄 검사를 조건 없이 걸었던 판은 같은 재생에서 allow→deny 33(커밋 호출 없는 편집·테스트 스크립트)이었다.
+- **회귀**: `meta-test/engine.sh` 「deny 하는 자리는 전부 기록된다」 79개(가드 1 포함). deny 63형태는 사유 로그까지 본다 — 여러 커밋 5(백로그 4형태·두 줄 두 커밋),
   `GIT_` 4(`GIT_DIR`·`env GIT_WORK_TREE`·`export GIT_INDEX_FILE`·`GIT_CONFIG_*`), 중첩 셸 11(`bash -c`·`sh -lc`·`/bin/zsh -c`·`eval`·이중 `bash -c`·
-  `bash -c --`·`bash --rcfile X -c`·`fish -c`·`tcsh -c`·여러 줄 인자 2), 줄잇기·변수 셸 단어 10(`bash -c \⏎'…'`·`bash \⏎-c '…'`·`eval \⏎'…'` →
-  `commit-nested-shell`, 대조 `&& \⏎git … commit`·짝수 백슬래시 `echo a\\⏎git … commit`·주석 안 `# c \⏎git … commit`·작은따옴표 안 `-m 'x \⏎y'; git … commit` → `commit-multiple`, `$SHELL -c`·`"$BASH" -c`·여러 줄 인자의 `${SHELL} -c` → `commit-nested-shell`), 히어독 22(따옴표 없는 본문의 `$(git --git-dir=…)`·가짜 히어독 뒤 `--git-dir` 커밋 →
-  `commit-global-option`, 가짜 히어독 뒤·백틱 안 `GIT_DIR=` → `commit-git-env`, 셸이 실행하거나 파일로 써서 실행하는 본문·메시지 꼴 뒤에 명령이 붙은
-  본문의 둘째 커밋·`bash -c` 커밋 → `commit-multiple`·`commit-nested-shell`), 메시지 본문 5(`-F - <<'X'`·`-m "$(cat <<'X'` 본문의 `git commit` 글 →
-  `commit-multiple`, `bash -c 'git commit'` 글 → `commit-nested-shell`, `eval git commit` 글 → `commit-multiple`).
-  영수증 검증(`게이트 실행 기록 없음`)까지 가는 6개 — 작성자·날짜 변수 2, 한 줄 메시지 안 글, `-F <파일>`, 가짜 따옴표 히어독 뒤의 유일한 커밋,
-  따옴표 히어독 본문 안 `eval "$(…)"` 뒤의 커밋. 판정 없음 4(`echo "git commit; git commit"`·`bash -c 'git status'`·`bash --rcfile X -c -- 'git status'`·`$SHELL -c 'git status'`),
-  사유 있는 우회 1. 직전 훅으로는 deny 중 55개가 실패했다(나머지 2개는 직전 훅도 막던 `commit-global-option` 형태). 통과 쪽은 직전 훅에서도 통과한다.
-  변이 — 세 검사를 하나씩 끔, `GIT_` 화이트리스트 끔, 셸 `-c` 를 옛 옵션 루프(첫 인자)로 되돌림, 셸 목록에서 fish·csh·tcsh 뺌, 폴백 인자 글을
-  첫 단어만 봄, 줄잇기 합친 판정을 끔(원문만), 원문 판정을 끔(합친 글만 — 주석 안 줄잇기 단언이 실패), 변수 셸 단어 처리를 끔(토큰 경로·폴백 각각) — 에서 각각 해당 단언이 실패했다. 가드: 훅의 판정 python 블록(bash `"$( … )"` 안)에 `$(` 글이 없다 — 있으면 macOS bash 3.2 가
-  짝 괄호로 읽어 훅 전체가 깨진다(이 작업 중 두 번 그렇게 깨졌다). 블록 주석에 `$(y)` 를 넣은 변이에서 실패한다.
+  `bash -c --`·`bash --rcfile X -c`·`fish -c`·`tcsh -c`·여러 줄 인자 2), 줄잇기·변수 셸 단어 10(`bash -c \⏎`·`bash \⏎-c`·`eval \⏎` — 원문 줄이 토큰화에
+  실패해 `commit-multiple`, 대조 `&& \⏎git`·짝수 백슬래시·주석 안 `\⏎`·작은따옴표 안 `\⏎` → `commit-multiple`, `$SHELL -c`·`"$BASH" -c`·`${SHELL} -c` 여러 줄 →
+  `commit-nested-shell`), 히어독 22(셸이 실행하거나 파일로 써서 실행하는 본문의 둘째 커밋·`bash -c` 커밋, 따옴표 없는 본문의 전역 옵션·`GIT_DIR=`),
+  메시지 본문 5(`-F - <<'X'`·`-m "$(cat <<'X'` 본문의 `git commit`·`bash -c 'git commit'`·`eval git commit` 글 → `commit-multiple`·`commit-nested-shell`),
+  토큰화 실패 줄 6(`env "GIT_DIR=…"`·`export 'GIT_DIR'=…` → `commit-git-env`, `"bash" -c "…"`·`'sh' -c '…'` 와 앞 커밋·`"git" -C … commit` →
+  `commit-multiple`, 히어독 본문 `eval "…"` 뒤 진짜 단일 커밋 → `commit-nested-shell`(받아들인 과탐)).
+  영수증 검증(`게이트 실행 기록 없음`)까지 가는 8개 — 작성자·날짜 변수 2, 한 줄 메시지 안 글, `-F <파일>`, 가짜 따옴표 히어독 뒤의 유일한 커밋,
+  위험 글 없는 여러 줄 메시지 단일 커밋 3(`git`·`commit` 단어가 다른 줄에 있는 메시지 2 포함). 판정 없음 6(`echo "git commit; git commit"`·`bash -c 'git status'`·`bash --rcfile X -c -- 'git status'`·
+  `$SHELL -c 'git status'`·앞 커밋 없는 단독 `"bash" -c "…여러 줄…"`·커밋 호출 없이 본문에 커밋 글 둘과 짝 없는 따옴표가 있는 편집 스크립트), 사유 있는 우회 1. 직전 훅으로는 deny 중 61개가 실패했다(나머지 2개는 직전 훅도 막던 `commit-global-option` 형태).
+  변이 — 세 검사를 하나씩 끔, `GIT_` 화이트리스트 끔, 셸 `-c` 인자를 c 옵션 바로 뒤 하나만 봄, 셸 목록에서 fish·csh·tcsh 뺌, 토큰 경로의 변수 셸
+  단어 처리를 끔, 원문 판정을 끔(합친 글만), 토큰화 실패 줄 검사를 통째로·갈래별로(개수·`GIT_`·중첩) 끔, 커밋 명령 조건을 뺌(판정 없음 대조 둘이 실패), 커밋 글을 줄을 넘어 찾게 되돌림(여러 줄 메시지 통과 단언 둘이 실패) — 에서 각각 해당 단언이 실패했다.
+  토큰화 실패 줄 검사가 더 넓게 덮어서, 폴백 NEST_RX 의 변수 단어·폴백 인자 글 범위·줄잇기 합친 판정을 끄는 변이는 이제 어느 단언도 깨뜨리지 않는다.
+  가드: 훅의 판정 python 블록(bash `"$( … )"` 안)에 `$(` 글이 없다 — 있으면 macOS bash 3.2 가 짝 괄호로 읽어 훅 전체가 깨진다(이 작업 중 두 번
+  그렇게 깨졌다). 블록 주석에 `$(y)` 를 넣은 변이에서 실패한다.
 - **어디**: `hooks/preflight-gate.sh`(`commit_calls`·`scan`·`commit_verdict`, 거부 분기 셋), `meta-test/engine.sh`, `docs/backlog.md`(두 항목 닫힘).
   `ENGINE_VERSION` 은 그대로(훅의 거부 갈래 — 영수증·프로필 계약 무관).

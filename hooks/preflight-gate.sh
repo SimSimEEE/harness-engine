@@ -98,6 +98,32 @@ NEST_RX = WB + r"(?:(?:(?:\S*/)?(?:" + SHELL_ALT + r")|" + QC + VAR_WORD + QC + 
 LOOSE_CALL = r"git" + QC + r"\s+(?:[^;&|]*?\s)?" + QC + r"commit(?![A-Za-z0-9_-])"
 # 히어독 본문도 다른 줄과 똑같이 명령 줄로 센다(개수·중첩 판정 포함). 셸 따옴표를 정규식으로 흉내 내 메시지 본문만 빼는 규칙은
 # 매번 그 흉내를 속이는 형태가 나왔다. 메시지 글에 커밋 글이 있으면 거부되고, 메시지는 `-F <파일>` 로 넘기면 된다.
+# 토큰화에 실패한 줄(여러 줄 따옴표)은 셸 문법을 정규식으로 흉내 내지 않는다 — 명령에 커밋 글이 있으면 실패 줄부터 끝까지의
+# 글에서 위험한 글이 보이는지만 본다(단어 경계·따옴표 무관). 따옴표 붙은 `"bash"`·`"GIT_DIR=…"`·`"git"` 이 그 자리를 빠져나갔다.
+# 정상 커밋의 여러 줄 메시지에 그런 글이 있으면 과탐이다 — 메시지 글 과탐과 같고, 우회는 `-F <파일>` 이다.
+# 커밋 글·셸 단어와 `-c` 는 한 줄 안에서만 찾는다 — 줄을 넘으면 여러 줄 메시지의 `git`·`commit` 단어가 다른 줄에 있기만 해도 맞는다.
+# 셸 `-c` 뒤의 커밋 글은 다음 줄에 있어도 된다(여러 줄 따옴표 인자).
+FB_CALL = r"(?<![A-Za-z0-9_])" + QC + r"git" + QC + r"[ \t]+(?:[^;&|" + chr(10) + r"]*?[ \t])?" + QC + r"commit(?![A-Za-z0-9_-])"
+FB_ENV = r"(?<![A-Za-z0-9_])GIT_[A-Za-z0-9_]*(?=" + QC + r"=)"
+FB_SHELL = r"(?<![A-Za-z0-9_])(?:(?:" + SHELL_ALT + r")|" + VAR_WORD + r"|(eval))" + QC + r"[ \t]"
+FB_COPT = r"(?:^|[ \t])" + QC + r"-[A-Za-z]*c"
+def fallback_reject(lines, start, st):
+    whole = chr(10).join(lines)
+    if not re.search(FB_CALL, whole):
+        return
+    tail = chr(10).join(lines[start:])
+    if len(re.findall(FB_CALL, whole)) >= 2:
+        st["n"] = max(st["n"], 2)
+    if any(bad_env(e) for e in re.findall(FB_ENV, tail)):
+        st["gitenv"] = True
+    for m in re.finditer(FB_SHELL, tail):
+        rest = tail[m.end():]
+        if not m.group(1):
+            c = re.search(FB_COPT, rest.split(chr(10), 1)[0])
+            rest = rest[c.end():] if c else ""
+        if re.search(FB_CALL, rest):
+            st["nested"] = True
+            break
 def tokens(line):
     lx = shlex.shlex(line, posix=True, punctuation_chars=True)
     lx.whitespace_split = True
@@ -109,7 +135,7 @@ def bad_env(name):
 def new_state():
     # n: 커밋 호출 수, first: 첫 호출의 `-C` 값, verdict: 첫 형태 거부 사유,
     # env: 지금까지 허용 밖 `GIT_*=` 를 봤는가, gitenv: 그 뒤에 커밋 호출이 왔는가, nested: 중첩 셸 안 커밋
-    return {"n": 0, "first": None, "verdict": None, "env": False, "gitenv": False, "nested": False}
+    return {"n": 0, "first": None, "verdict": None, "env": False, "gitenv": False, "nested": False, "fail": None}
 def nested_has_commit(arg, depth):
     if depth + 1 > MAXDEPTH:
         return bool(re.search(LOOSE_CALL, arg, re.S))
@@ -180,10 +206,17 @@ def scan_both(text, depth):
     raw = new_state()
     scan(text, depth, raw)
     joined_text = re.sub(r"(?<!\\)((?:\\\\)*)\\" + chr(10), r"\1", text)
+    joined = new_state()
+    if joined_text != text:
+        scan(joined_text, depth, joined)
+    # 토큰화 실패 줄 검사는 커밋 명령에만 건다 — 토큰·GITPOS 로 센 커밋 호출이나 형태 거부가 있거나, 경로 해석용 STRICT 가
+    # 맞을 때. 커밋 호출이 없는 편집·테스트 스크립트(본문에 커밋 글 둘 이상)를 거부하던 과탐이 재생에서 33건 나왔다.
+    if raw["n"] or raw["verdict"] or joined["n"] or joined["verdict"] or re.search(STRICT, text, re.S):
+        for t, st in ((text, raw), (joined_text, joined)):
+            if st["fail"] is not None:
+                fallback_reject(t.split(chr(10)), st["fail"], st)
     if joined_text == text:
         return raw
-    joined = new_state()
-    scan(joined_text, depth, joined)
     raw["verdict"] = raw["verdict"] or joined["verdict"]
     raw["n"] = max(raw["n"], joined["n"])
     for k in ("nested", "gitenv", "env"):
@@ -197,6 +230,7 @@ def scan(text, depth, st):
         try:
             toks = tokens(line)
         except ValueError:
+            st["fail"] = i if st["fail"] is None else st["fail"]
             # git 이 시작하는 자리마다 판정한다. 줄 전체에 한 번 걸면 앞쪽의 정상 커밋 하나가 STRICT 를
             # 채워 뒤쪽의 `--git-dir`·`-c` 커밋을 가린다 — 그러면 앞 호출의 레포 영수증으로 통과한다.
             for g in re.finditer(GITPOS, line):
