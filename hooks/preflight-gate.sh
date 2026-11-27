@@ -75,14 +75,117 @@ GITPOS = r"(^|(?<=[;&|\s({" + BQ + r"]))(\S*/)?git\s"
 CALL_AT = r"(\S*/)?git\s+([^;&|]*?\s)?commit(\s|\)|" + BQ + r"|$)"
 def unq(v):
     return (v or "").strip(chr(34) + chr(39))
-def commit_calls(line):
+# 한 Bash 호출 안의 커밋 호출은 하나만 받는다(`commit-multiple`). 경로 해석 재료는 한 호출에서만
+# 나오므로, 둘째 호출부터는 영수증 검증·형태 차단 없이 다른 레포에 커밋된다.
+# 커밋 호출 앞의 `GIT_*=` 할당도 거부한다(`commit-git-env`) — `GIT_DIR`·`GIT_WORK_TREE`·`GIT_CONFIG_*` 는
+# 전역 옵션과 같은 일(대상 레포·설정 변경)을 한다. 대상 레포를 바꾸지 않는 작성자·날짜 변수만 받는다(화이트리스트).
+# 셸 단어(`sh|bash|zsh|dash|ksh|fish|csh|tcsh`) 뒤 같은 단순 명령에 c 든 짧은 옵션(`-c`·`-lc`)이 있으면 그 뒤 인자 **전부**를,
+# `eval` 은 인자를 이은 글을 다시 토큰화해, 안에 커밋이 있으면 거부한다(`commit-nested-shell`). 옵션을 하나씩 해석하지 않는다 —
+# `--` 나 값 받는 긴 옵션(`--rcfile X`)마다 명령 문자열 자리가 달라져, 고르는 쪽은 매번 한 갈래를 놓친다.
+# 그 밖의 명령 인자 글(`echo "git commit"`)은 판정하지 않는다.
+SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "fish", "csh", "tcsh"}
+# 변수 확장 하나뿐인 명령 단어(`$SHELL`·`"$BASH"`·`${X}`)도 셸로 본다 — 무엇이 실행될지 정적으로 모른다(모르면 거부 쪽).
+VAR_WORD = r"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?"
+GIT_ENV_OK = {"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_DATE",
+              "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_COMMITTER_DATE"}
+# 중첩 깊이 상한. 상한에 닿은 글은 다시 풀지 않고 `git … commit` 글이 있으면 중첩 커밋으로 본다(모르면 거부).
+MAXDEPTH = 3
+QC = "[" + chr(34) + chr(39) + "]?"
+WB = r"(?:^|(?<=[\s;&|(" + BQ + r"]))"
+ENV_RX = WB + r"(GIT_[A-Za-z0-9_]*)="
+SHELL_ALT = "sh|bash|zsh|dash|ksh|fish|csh|tcsh"
+NEST_RX = WB + r"(?:(?:(?:\S*/)?(?:" + SHELL_ALT + r")|" + QC + VAR_WORD + QC + r")(?=\s)[^;&|()" + chr(10) + r"]*?\s-[A-Za-z]*c[A-Za-z]*(?=\s|$)|eval(?=\s))"
+LOOSE_CALL = r"git" + QC + r"\s+(?:[^;&|]*?\s)?" + QC + r"commit(?![A-Za-z0-9_-])"
+# 히어독 본문도 다른 줄과 똑같이 명령 줄로 센다(개수·중첩 판정 포함). 셸 따옴표를 정규식으로 흉내 내 메시지 본문만 빼는 규칙은
+# 매번 그 흉내를 속이는 형태가 나왔다. 메시지 글에 커밋 글이 있으면 거부되고, 메시지는 `-F <파일>` 로 넘기면 된다.
+# 토큰화에 실패한 줄(여러 줄 따옴표)은 셸 문법을 정규식으로 흉내 내지 않는다 — 명령에 커밋 글이 있으면 실패 줄부터 끝까지의
+# 글에서 위험한 글이 보이는지만 본다(단어 경계·따옴표 무관). 따옴표 붙은 `"bash"`·`"GIT_DIR=…"`·`"git"` 이 그 자리를 빠져나갔다.
+# 정상 커밋의 여러 줄 메시지에 그런 글이 있으면 과탐이다 — 메시지 글 과탐과 같고, 우회는 `-F <파일>` 이다.
+# 커밋 글·셸 단어와 `-c` 는 한 줄 안에서만 찾는다 — 줄을 넘으면 여러 줄 메시지의 `git`·`commit` 단어가 다른 줄에 있기만 해도 맞는다.
+# 셸 `-c` 뒤의 커밋 글은 다음 줄에 있어도 된다(여러 줄 따옴표 인자).
+FB_CALL = r"(?<![A-Za-z0-9_])" + QC + r"git" + QC + r"[ \t]+(?:[^;&|" + chr(10) + r"]*?[ \t])?" + QC + r"commit(?![A-Za-z0-9_-])"
+FB_ENV = r"(?<![A-Za-z0-9_])GIT_[A-Za-z0-9_]*(?=" + QC + r"=)"
+FB_SHELL = r"(?<![A-Za-z0-9_])(?:(?:" + SHELL_ALT + r")|" + VAR_WORD + r"|(eval))" + QC + r"[ \t]"
+FB_COPT = r"(?:^|[ \t])" + QC + r"-[A-Za-z]*c"
+def fallback_reject(lines, start, st):
+    whole = chr(10).join(lines)
+    if not re.search(FB_CALL, whole):
+        return
+    tail = chr(10).join(lines[start:])
+    if len(re.findall(FB_CALL, whole)) >= 2:
+        st["n"] = max(st["n"], 2)
+    if any(bad_env(e) for e in re.findall(FB_ENV, tail)):
+        st["gitenv"] = True
+    for m in re.finditer(FB_SHELL, tail):
+        rest = tail[m.end():]
+        if not m.group(1):
+            c = re.search(FB_COPT, rest.split(chr(10), 1)[0])
+            rest = rest[c.end():] if c else ""
+        if re.search(FB_CALL, rest):
+            st["nested"] = True
+            break
+def tokens(line):
     lx = shlex.shlex(line, posix=True, punctuation_chars=True)
     lx.whitespace_split = True
-    toks = list(lx)
+    return list(lx)
+def is_sep(t):
+    return t != "" and all(ch in "();<>|&" for ch in t) and any(ch in ";|&()" for ch in t)
+def bad_env(name):
+    return name.startswith("GIT_") and name not in GIT_ENV_OK
+def new_state():
+    # n: 커밋 호출 수, first: 첫 호출의 `-C` 값, verdict: 첫 형태 거부 사유,
+    # env: 지금까지 허용 밖 `GIT_*=` 를 봤는가, gitenv: 그 뒤에 커밋 호출이 왔는가, nested: 중첩 셸 안 커밋
+    return {"n": 0, "first": None, "verdict": None, "env": False, "gitenv": False, "nested": False, "fail": None}
+def nested_has_commit(arg, depth):
+    if depth + 1 > MAXDEPTH:
+        return bool(re.search(LOOSE_CALL, arg, re.S))
+    sub = scan_both(arg, depth + 1)
+    return bool(sub["first"] is not None or sub["nested"] or sub["verdict"])
+def nested_arg_text(tail):
+    # 토큰화가 안 되는 줄에서 옵션 뒤 인자 글을 단순 명령 끝까지 모은다 — 따옴표 인자는 짝 따옴표까지(줄을 넘어도),
+    # 맨 인자는 공백까지. 따옴표 밖 `;&|()`·줄바꿈에서 멈춘다(뒤 명령의 진짜 커밋을 중첩으로 오인하지 않게).
+    out, k = [], 0
+    while k < len(tail) and len(out) < 32:
+        while k < len(tail) and tail[k] in " " + chr(9):
+            k += 1
+        if k >= len(tail) or tail[k] in ";&|()" + chr(10):
+            break
+        if tail[k] in chr(34) + chr(39):
+            body = tail[k + 1:]
+            e = re.search((chr(39) if tail[k] == chr(39) else r"(?<!\\)" + chr(34)), body)
+            if not e:
+                out.append(body); break
+            out.append(body[:e.start()]); k += 1 + e.end()
+        else:
+            w = re.match(r"[^\s;&|()" + chr(34) + chr(39) + r"]+", tail[k:])
+            out.append(w.group(0)); k += w.end()
+    return chr(10).join(out)
+def commit_calls(toks, depth, st):
+    # 토큰 한 줄에서 커밋 호출의 git…commit 사이 옵션 목록을 낸다. 환경변수·중첩 셸 판정은 st 에 쌓는다.
     out, i = [], 0
     while i < len(toks):
+        t = toks[i]
         # 명령 치환·서브셸 안의 호출도 같은 호출이다 — 백틱은 shlex 가 단어에 붙여 둔다.
-        if os.path.basename(toks[i].lstrip(BQ)) != "git":
+        b = os.path.basename(t.lstrip(BQ))
+        m = re.match(r"([A-Za-z_][A-Za-z0-9_]*)=", t.lstrip(BQ))
+        if m and bad_env(m.group(1)):
+            st["env"] = True
+        arg = None
+        if b == "eval":
+            j, parts = i + 1, []
+            while j < len(toks) and not is_sep(toks[j]):
+                parts.append(toks[j]); j += 1
+            arg = " ".join(parts)
+        elif b in SHELLS or re.fullmatch(VAR_WORD, t.lstrip(BQ)):
+            j, rest = i + 1, []
+            while j < len(toks) and not is_sep(toks[j]):
+                rest.append(toks[j]); j += 1
+            k = next((x for x, a in enumerate(rest) if a[:1] == "-" and a[1:2] != "-" and "c" in a[1:]), None)
+            if k is not None and any(nested_has_commit(a, depth) for a in rest[k + 1:]):
+                st["nested"] = True
+        if arg and nested_has_commit(arg, depth):
+            st["nested"] = True
+        if b != "git":
             i += 1; continue
         j, mid = i + 1, []
         while j < len(toks) and toks[j].startswith("-"):
@@ -92,18 +195,42 @@ def commit_calls(line):
             j += 1
         if j < len(toks) and toks[j].rstrip(BQ) == "commit":
             out.append(mid)
+            if st["env"]:
+                st["gitenv"] = True
         i = max(j, i + 1)
     return out
-def commit_verdict(cmd):
-    # 판정과 함께 **첫 커밋 호출의 `-C` 값**을 돌려준다 — 대상 레포를 읽는 STRICT 매치의 `-C` 값과
-    # 대조하는 데 쓴다(아래). 값이 다르면 메시지·주석 안의 `git commit` 글이 진짜 호출 대신 해석된
-    # 것이다. **같은 호출인지는 보지 않는다** — 둘 다 `-C` 가 없으면 값이 같아 대조를 지나고, 그때
-    # CD_DIR 은 가짜 매치 앞에서 잘린다(docs/backlog.md 「대상 레포 해석 재료가 아직 정규식이다」).
-    first = None
-    for line in cmd.split(chr(10)):
+def scan_both(text, depth):
+    # 원문 판정과 줄잇기(홀수 개 백슬래시+줄바꿈)를 합친 글의 판정을 둘 다 내고 엄격한 쪽을 쓴다. 줄로만 자르면
+    # `bash -c \⏎ "…"` 의 인자가 다음 줄로 넘어가 빠져나가고, 합친 글만 보면 주석·따옴표 안의 `\⏎` 가 다음 줄 커밋을 삼킨다.
+    # 셸의 주석·따옴표 안 줄잇기 규칙을 흉내 내지 않고, 합친 판정을 원문 판정에 더하기만 한다. first 는 원문의 것(경로 해석과 맞춘다).
+    raw = new_state()
+    scan(text, depth, raw)
+    joined_text = re.sub(r"(?<!\\)((?:\\\\)*)\\" + chr(10), r"\1", text)
+    joined = new_state()
+    if joined_text != text:
+        scan(joined_text, depth, joined)
+    # 토큰화 실패 줄 검사는 커밋 명령에만 건다 — 토큰·GITPOS 로 센 커밋 호출이나 형태 거부가 있거나, 경로 해석용 STRICT 가
+    # 맞을 때. 커밋 호출이 없는 편집·테스트 스크립트(본문에 커밋 글 둘 이상)를 거부하던 과탐이 재생에서 33건 나왔다.
+    if raw["n"] or raw["verdict"] or joined["n"] or joined["verdict"] or re.search(STRICT, text, re.S):
+        for t, st in ((text, raw), (joined_text, joined)):
+            if st["fail"] is not None:
+                fallback_reject(t.split(chr(10)), st["fail"], st)
+    if joined_text == text:
+        return raw
+    raw["verdict"] = raw["verdict"] or joined["verdict"]
+    raw["n"] = max(raw["n"], joined["n"])
+    for k in ("nested", "gitenv", "env"):
+        raw[k] = raw[k] or joined[k]
+    if raw["first"] is None:
+        raw["first"] = joined["first"]
+    return raw
+def scan(text, depth, st):
+    lines = text.split(chr(10))
+    for i, line in enumerate(lines):
         try:
-            calls = commit_calls(line)
+            toks = tokens(line)
         except ValueError:
+            st["fail"] = i if st["fail"] is None else st["fail"]
             # git 이 시작하는 자리마다 판정한다. 줄 전체에 한 번 걸면 앞쪽의 정상 커밋 하나가 STRICT 를
             # 채워 뒤쪽의 `--git-dir`·`-c` 커밋을 가린다 — 그러면 앞 호출의 레포 영수증으로 통과한다.
             for g in re.finditer(GITPOS, line):
@@ -113,27 +240,57 @@ def commit_verdict(cmd):
                 pre = line[g.start() - 1] if g.start() else ""
                 sm = re.match(STRICT_CALL, rest)
                 if (pre == "" or pre in ";&|" or pre.isspace()) and sm:
-                    if first is None:
-                        first = unq(sm.group("cdir"))
+                    st["n"] += 1
+                    if st["first"] is None:
+                        st["first"] = unq(sm.group("cdir"))
+                    if st["env"] or any(bad_env(e) for e in re.findall(ENV_RX, line[:g.start()])):
+                        st["gitenv"] = True
                 elif re.match(r"(\S*/)?git\s+-", rest) and not re.match(r"(\S*/)?git\s+-C\s", rest):
-                    return "commit-global-option", first
+                    st["verdict"] = st["verdict"] or "commit-global-option"
                 else:
                     # `-C` 로 시작하는데 못 읽은 것은 경로 형태 문제다 — 토큰 판정(`-C a\ b`)과 사유를 맞춘다.
-                    return "commit-unparsed", first
-            continue
-        for mid in calls:
-            if mid and not (len(mid) == 2 and mid[0] == "-C"):
-                return "commit-global-option", first
-            if first is None:
-                first = mid[1] if mid else ""
-    return ("commit-seen" if first is not None else ""), first
+                    st["verdict"] = st["verdict"] or "commit-unparsed"
+            if any(bad_env(e) for e in re.findall(ENV_RX, line)):
+                st["env"] = True
+            # 여러 줄에 걸친 `-c` 인자는 줄 단위로 다시 풀 수 없다 — 옵션 뒤 인자 글(nested_arg_text)에 커밋 글이 있으면 중첩 커밋으로 본다.
+            for m in re.finditer(NEST_RX, line):
+                if re.search(LOOSE_CALL, nested_arg_text(line[m.end():] + chr(10) + chr(10).join(lines[i + 1:])), re.S):
+                    st["nested"] = True
+        else:
+            for mid in commit_calls(toks, depth, st):
+                st["n"] += 1
+                if mid and not (len(mid) == 2 and mid[0] == "-C"):
+                    st["verdict"] = st["verdict"] or "commit-global-option"
+                elif st["first"] is None:
+                    st["first"] = mid[1] if mid else ""
+def commit_verdict(cmd):
+    # 판정과 함께 **첫 커밋 호출의 `-C` 값**을 돌려준다 — 대상 레포를 읽는 STRICT 매치의 `-C` 값과
+    # 대조하는 데 쓴다(아래). 값이 다르면 메시지·주석 안의 `git commit` 글이 진짜 호출 대신 해석된
+    # 것이다. **같은 호출인지는 보지 않는다** — 둘 다 `-C` 가 없으면 값이 같아 대조를 지나고, 그때
+    # CD_DIR 은 가짜 매치 앞에서 잘린다(docs/backlog.md 「대상 레포 해석 재료가 아직 정규식이다」).
+    # 사유가 겹치면 형태(전역 옵션·해석 불가) → 여러 커밋 → 중첩 셸 → GIT_ 환경변수 순으로 하나를 낸다.
+    try:
+        st = scan_both(cmd, 0)
+    except Exception:
+        # 판정기가 죽으면 훅이 exit 0 으로 침묵한다 — 커밋 글이 있으면 거부 쪽으로 닫는다.
+        return ("commit-unparsed" if re.search(LOOSE_CALL, cmd, re.S) else ""), None
+    if st["verdict"]:
+        return st["verdict"], st["first"]
+    if st["n"] >= 2:
+        return "commit-multiple", st["first"]
+    if st["nested"]:
+        return "commit-nested-shell", st["first"]
+    if st["gitenv"]:
+        return "commit-git-env", st["first"]
+    return ("commit-seen" if st["n"] else ""), st["first"]
 cv, cv_dir = commit_verdict(cmd)
+REJECTS = ("commit-global-option", "commit-unparsed", "commit-multiple", "commit-nested-shell", "commit-git-env")
 PATS = (("commit", STRICT),
         ("pr",     r"(^|[;&|]|\s)gh\s+pr\s+create(\s|$)"))
 sm = re.search(STRICT, cmd, re.S)
-if cv in ("commit-global-option", "commit-unparsed") or (cv == "commit-seen" and (not sm or unq(sm.group("cdir")) != cv_dir)):
+if cv in REJECTS or (cv == "commit-seen" and (not sm or unq(sm.group("cdir")) != cv_dir)):
     PATS = ()
-    emit("kind=" + ("commit-global-option" if cv == "commit-global-option" else "commit-unparsed"))
+    emit("kind=" + (cv if cv in REJECTS else "commit-unparsed"))
 for kind, rx in PATS:
     m = re.search(rx, cmd, re.S)
     if m:
@@ -226,6 +383,28 @@ if [ "$kind" = "commit-global-option" ]; then
     kind=commit
     pf_hook_log denied "commit-global-option"
     REASON="\`git\` 과 \`commit\` 사이에 \`-C <절대경로>\` 말고 다른 전역 옵션이 있다(\`-c k=v\`·\`--git-dir\`·\`--work-tree\` 등). 이런 옵션은 게이트 판정을 빠져나가거나 대상 레포를 바꿀 수 있어 거부한다 — \`git -C <절대경로> commit …\` 형태로 다시 실행해라. 커밋 설정이 필요하면 레포 설정(\`git config\`)으로 미리 바꿔라."
+    pf_deny "$REASON"
+    exit 0
+fi
+# 둘째 커밋 호출부터는 대상 레포를 읽지 않으므로 경로 해석 전에 거부한다.
+if [ "$kind" = "commit-multiple" ]; then
+    kind=commit
+    pf_hook_log denied "commit-multiple"
+    REASON="한 Bash 호출에 커밋은 하나만. 이 명령에는 \`git commit\` 호출이 둘 이상 있다 — 게이트는 한 호출의 대상 레포만 검증하므로 나머지는 검사 없이 다른 레포에 커밋될 수 있어 거부한다. 커밋마다 별도 Bash 호출로 실행해라. 픽스처 레포를 여러 번 커밋하는 스크립트는 파일로 써서 돌려라. 메시지 본문에 \`git commit\` 글이 있어 걸렸다면 메시지를 파일로 써서 \`-F <파일>\` 로 넘겨라 — 그 파일은 별도 Bash 호출이나 파일 쓰기 도구로 만든다(같은 호출의 히어독 본문도 명령 줄로 센다)."
+    pf_deny "$REASON"
+    exit 0
+fi
+if [ "$kind" = "commit-nested-shell" ]; then
+    kind=commit
+    pf_hook_log denied "commit-nested-shell"
+    REASON="셸 \`-c\` 인자(\`sh|bash|zsh|fish … -c '…'\`)나 \`eval\` 안에 커밋 호출이 있다. 메시지 글 때문에 걸렸다면 메시지를 \`-F <파일>\` 로 넘겨라. 따옴표 안 명령은 게이트가 대상 레포를 읽지 못해 거부한다 — 셸로 감싸지 말고 \`git -C <절대경로> commit …\` 을 직접 실행해라. 여러 커밋을 도는 스크립트는 파일로 써서 돌려라."
+    pf_deny "$REASON"
+    exit 0
+fi
+if [ "$kind" = "commit-git-env" ]; then
+    kind=commit
+    pf_hook_log denied "commit-git-env"
+    REASON="커밋 호출 앞에 \`GIT_\` 환경변수 할당이 있다(\`GIT_DIR\`·\`GIT_WORK_TREE\`·\`GIT_INDEX_FILE\`·\`GIT_CONFIG_*\` 등). 이런 변수는 대상 레포·인덱스·설정을 바꿔 다른 레포의 게이트 기록으로 판정될 수 있어 거부한다. 받는 것은 작성자·날짜 변수(\`GIT_AUTHOR_NAME\`·\`GIT_AUTHOR_EMAIL\`·\`GIT_AUTHOR_DATE\`·\`GIT_COMMITTER_NAME\`·\`GIT_COMMITTER_EMAIL\`·\`GIT_COMMITTER_DATE\`)뿐이다 — 그 밖의 변수 없이 \`git -C <절대경로> commit …\` 으로 다시 실행해라."
     pf_deny "$REASON"
     exit 0
 fi

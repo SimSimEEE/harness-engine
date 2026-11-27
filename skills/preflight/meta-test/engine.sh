@@ -3126,6 +3126,159 @@ _pr="$(hookdeny "/usr/bin/git -C $HD $CM -m x")"
 _pr="$(hookdeny "git -C $HD $CM -m x")"
 [ -n "$_pr" ] && [ "$_pr" != "commit-global-option" ] && ok "\`git -C <경로> commit\` 은 전역 옵션 거부에 걸리지 않는다 [$_pr]" \
   || ng "\`git -C <경로> commit\` 판정이 바뀌었다" "commit-global-option 이 아님 [$_pr]"
+# 판정 python 블록은 bash 의 "$( … )" 안에 있다 — 블록 안에 `$(` 글이 있으면 macOS bash 3.2 가 짝 괄호로 읽어 훅 전체가 깨진다.
+_pyb=$(awk '/^eval "\$\(CMD="\$CMD" python3 -c /{f=1;next} f&&/^. 2>\/dev\/null\)" 2>\/dev\/null \|\| exit 0/{f=0} f' "$HK")
+[ -n "$_pyb" ] && ! printf '%s' "$_pyb" | grep -qF '$(' && ok "훅의 판정 python 블록에 \`\$(\` 글이 없다" \
+  || ng "훅의 판정 python 블록을 못 찾았거나 \`\$(\` 글이 있다 ($(printf '%s' "$_pyb" | grep -nF '$(' | head -1 | cut -c1-60))" "블록 있음 · \`\$(\` 0"
+# 한 호출 안의 여러 커밋·커밋 앞 GIT_ 환경변수·중첩 셸 안 커밋 — 경로 해석 전에 거부한다.
+# 넓히지 않고 거부한다: 둘째 호출·GIT_DIR·`bash -c` 안 커밋은 대상 레포 해석 재료에 잡히지 않는다.
+for _mx in "git -C /a $CM -m x && git -C /b $CM -m y" "git $CM -m x && \"git\" -C /b $CM -m y" \
+           "git -C /a $CM -m x && 'git' -C /b $CM -m y" "cd /a && git $CM -m x && cd /b && git $CM -m y" \
+           "git -C $HD $CM -m x
+git -C $HD $CM -m y"; do
+  _pr="$(hookdeny "$_mx")"
+  [ "$_pr" = "commit-multiple" ] && ok "한 호출 안의 커밋 둘은 거부한다 [$(printf '%s' "$_mx" | tr '\n' '/' | cut -c1-50)]" \
+    || ng "한 호출 안의 둘째 커밋이 판정을 빠져나간다 [$(printf '%s' "$_mx" | tr '\n' '/' | cut -c1-50)]" "commit-multiple [$_pr]"
+done
+for _ge in "GIT_DIR=/x/.git git -C $HD $CM -m x" "env GIT_WORK_TREE=/x git -C $HD $CM -m x" \
+           "export GIT_INDEX_FILE=/x; git -C $HD $CM -m x" \
+           "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/x git -C $HD $CM -m x"; do
+  _pr="$(hookdeny "$_ge")"
+  [ "$_pr" = "commit-git-env" ] && ok "커밋 앞의 GIT_ 환경변수는 거부한다 [${_ge%% git -C*}]" \
+    || ng "GIT_ 환경변수로 대상 레포를 바꾼 커밋이 지나간다 [${_ge%% git -C*}]" "commit-git-env [$_pr]"
+done
+for _ns in "bash -c 'git -C $HD $CM -m x'" "sh -lc \"git $CM -m x\"" "/bin/zsh -c 'cd /x && git $CM'" \
+           "eval \"git -C $HD $CM -m x\"" "bash -c \"bash -c 'git $CM'\"" \
+           "bash -c -- 'git -C $HD $CM -m x'" "bash --rcfile /dev/null -c 'git -C $HD $CM -m x'" \
+           "fish -c 'git -C $HD $CM -m x'" "tcsh -c 'git -C $HD $CM -m x'" \
+           "bash --rcfile /dev/null -c \"git -C $HD $CM -m 'a
+b'\"" "bash -c -- \"git -C $HD $CM -m 'a
+b'\""; do
+  _pr="$(hookdeny "$_ns")"
+  [ "$_pr" = "commit-nested-shell" ] && ok "중첩 셸·eval 안의 커밋은 거부한다 [$(printf '%s' "$_ns" | cut -c1-40)]" \
+    || ng "중첩 셸·eval 안의 커밋이 판정 없이 지나간다 [$(printf '%s' "$_ns" | cut -c1-40)]" "commit-nested-shell [$_pr]"
+done
+# 줄잇기(홀수 개 백슬래시+줄바꿈)를 합친 판정을 원문 판정에 더한다(엄격한 쪽) — 줄로만 자르면 `bash -c \⏎'…'` 의 인자가 다음 줄로
+# 넘어가 빠져나가고, 합친 글만 보면 주석·따옴표 안의 `\⏎` 가 다음 줄 커밋을 삼킨다. 셸의 주석·따옴표 규칙은 흉내 내지 않는다.
+# 홀수 개 백슬래시만 합친다 — 짝수 개(`echo a\\⏎`) 뒤 줄은 다음 명령으로 센다.
+# 변수 확장 하나뿐인 명령 단어(`$SHELL`·`"$BASH"`)도 셸로 본다. 표의 \0134\n 은 백슬래시+줄바꿈이다.
+while IFS='|' read -r _want _lc; do
+  _lc="$(printf '%b' "$_lc")"
+  _pr="$(hookdeny "$_lc")"
+  [ "$_pr" = "$_want" ] && ok "줄잇기·변수 셸 단어도 판정한다 [$_want: $(printf '%s' "$_lc" | tr '\n' '/' | cut -c1-45)]" \
+    || ng "줄잇기·변수 셸 단어가 판정을 빠져나간다 [$(printf '%s' "$_lc" | tr '\n' '/' | cut -c1-45)]" "$_want [$_pr]"
+done <<LCEOF
+commit-multiple|git -C $HD $CM -m x; bash -c \0134\n'git -C /b $CM -m y'
+commit-multiple|git -C $HD $CM -m x; bash \0134\n-c 'git -C /b $CM -m y'
+commit-multiple|git -C $HD $CM -m x; eval \0134\n'git -C /b $CM -m y'
+commit-multiple|git -C $HD $CM -m x && \0134\ngit -C /b $CM -m y
+commit-multiple|git -C $HD $CM -m x; echo a\0134\0134\ngit -C /b $CM -m y
+commit-multiple|git -C $HD $CM -m x # c \0134\ngit -C /b $CM -m y
+commit-multiple|git -C $HD $CM -m 'x \0134\ny'; git -C /b $CM -m z
+commit-nested-shell|\$SHELL -c 'git -C $HD $CM -m y'
+commit-nested-shell|"\$BASH" -c 'git -C $HD $CM -m y'
+commit-nested-shell|\${SHELL} -c "git -C $HD $CM -m 'a\nb'"
+LCEOF
+# 토큰화에 실패한 줄(여러 줄 따옴표)은 정규식으로 셸을 흉내 내지 않는다 — 커밋 글이 있으면 실패 줄부터 끝까지에서 따옴표 붙은
+# `"GIT_DIR=…"`·`"bash" -c`·`"git"` 같은 위험 글이 보이기만 해도 거부한다. 위험 글 없는 여러 줄 메시지 단일 커밋은 영수증 검증으로 간다.
+# 이 검사는 커밋 명령(토큰·GITPOS 로 센 커밋 호출·형태 거부가 있거나 경로 해석 STRICT 가 맞는 명령)에만 건다 — 커밋 호출 없는
+# 편집 스크립트는 판정하지 않는다(아래 판정 없음 대조). 실패 줄 뒤에 `eval` 글과 커밋 글이 함께 있으면 진짜 단일 커밋도 거부한다
+# (과탐, 받아들임 — 마지막 행).
+while IFS='|' read -r _want _fb; do
+  _fb="$(printf '%b' "$_fb")"
+  _pr="$(hookdeny "$_fb")"
+  [ "$_pr" = "$_want" ] && ok "토큰화 실패 줄의 따옴표 붙은 위험 글도 판정한다 [$_want: $(printf '%s' "$_fb" | tr '\n' '/' | cut -c1-45)]" \
+    || ng "토큰화 실패 줄의 따옴표 붙은 위험 글이 판정을 빠져나간다 [$(printf '%s' "$_fb" | tr '\n' '/' | cut -c1-45)]" "$_want [$_pr]"
+done <<FBEOF
+commit-git-env|env "GIT_DIR=/x/.git" git -C $HD $CM -m "a\nb"
+commit-git-env|export 'GIT_DIR'=/x/.git; git -C $HD $CM -m "a\nb"
+commit-multiple|git -C $HD $CM -m x; "bash" -c "git -C /b $CM -m 'a\nb'"
+commit-multiple|git -C $HD $CM -m x; 'sh' -c 'git -C /b $CM -m "a\nb"'
+commit-multiple|git -C $HD $CM -m "a\nb"; "git" -C /b $CM -m y
+commit-nested-shell|cat > $HD/f <<'EOF'\nrun ( eval "\$(f)" ) it's\nEOF\ngit -C $HD $CM -m x
+FBEOF
+# 커밋 글은 한 줄 안에서만 센다 — 여러 줄 메시지의 `git`·`commit` 단어가 다른 줄에 있는 것은 둘째 커밋이 아니다.
+for _ml in "git -C $HD $CM -m \"a
+b\"" "git -C $HD $CM -m \"\$(cat <<'EOF'
+Teach git hook about quoting
+
+This $CM adds a fallback.
+EOF
+)\"" "git -C $HD $CM -m \"Teach git hook
+The $CM gate now checks more\""; do
+  _pr="$(hookdeny "$_ml")"
+  case "$_pr" in *"게이트 실행 기록 없음"*) ok "위험 글 없는 여러 줄 메시지 단일 커밋은 영수증 검증으로 간다 [$(printf '%s' "$_ml" | tr '\n' '/' | cut -c1-50)]";;
+    *) ng "여러 줄 메시지 단일 커밋이 새 거부에 걸린다 [$(printf '%s' "$_ml" | tr '\n' '/' | cut -c1-50)]" "게이트 실행 기록 없음 [$_pr]";; esac
+done
+# 히어독 본문도 명령 줄로 판정한다 — 따옴표 없는 구분자의 본문은 확장되어 실행되고, 인자 글 안의 `<<` 는 히어독이 아니다.
+# 개수에서 빼는 것은 따옴표 구분자 본문뿐이다.
+while IFS='|' read -r _want _hx; do
+  _hx="$(printf '%b' "$_hx")"
+  _pr="$(hookdeny "$_hx")"
+  [ "$_pr" = "$_want" ] && ok "히어독 본문·가짜 히어독 뒤 줄도 판정한다 [$_want: $(printf '%s' "$_hx" | tr '\n' '/' | cut -c1-45)]" \
+    || ng "히어독 본문·가짜 히어독 뒤 줄이 판정을 빠져나간다 [$(printf '%s' "$_hx" | tr '\n' '/' | cut -c1-45)]" "$_want [$_pr]"
+done <<HXEOF
+commit-global-option|cat <<EOF\n\$(git --git-dir=/x/.git $CM -m x)\nEOF
+commit-global-option|echo '<<' true\ngit --git-dir=/x/.git $CM -m x\ntrue
+commit-multiple|git -C $HD $CM -m x\ncat <<EOF\n\$(git -C $HD $CM -m y)\nEOF
+commit-git-env|echo '<<' true\nGIT_DIR=/x/.git git -C $HD $CM -m x\ntrue
+commit-git-env|cat <<EOF >/dev/null\n\`GIT_DIR=/x/.git git -C $HD $CM -m x\`\nEOF
+commit-multiple|git -C $HD $CM -m x\ncat <<'EOF' | bash\ngit -C $HD $CM -m y\nEOF
+commit-nested-shell|cat <<'EOF' | bash\nbash -c 'git -C $HD $CM -m y'\nEOF
+commit-multiple|git -C $HD $CM -m x\ncat <<'EOF' | bash; true\ngit -C $HD $CM -m y\nEOF
+commit-multiple|git -C $HD $CM -m x\n(cat <<'EOF' | bash)\ngit -C $HD $CM -m y\nEOF
+commit-multiple|git -C $HD $CM -m x\ncat <<'EOF' > >(bash)\ngit -C $HD $CM -m y\nEOF
+commit-multiple|git -C $HD $CM -m x\ncat <<'EOF' | bash&& true\ngit -C $HD $CM -m y\nEOF
+commit-multiple|git -C $HD $CM -m x\ncat <<'EOF' \0134\n| bash\ngit -C $HD $CM -m y\nEOF
+commit-nested-shell|cat <<'EOF' | bash; true\nbash -c 'git -C $HD $CM -m y'\nEOF
+commit-multiple|git -C $HD $CM -m x\ncat <<'EOF' | \$SHELL\ngit -C $HD $CM -m y\nEOF
+commit-multiple|git -C $HD $CM -m x\nbash<<'EOF'\ngit -C $HD $CM -m y\nEOF
+commit-multiple|git -C $HD $CM -m x\n/bin/bash<<'EOF'\ngit -C $HD $CM -m y\nEOF
+commit-multiple|git -C $HD $CM -m x\ncat <<'EOF' >$HD/x.sh; sh $HD/x.sh\ngit -C $HD $CM -m y\nEOF
+commit-multiple|git -C $HD $CM -m x\ncat <<'EOF' >$HD/x.sh; $HD/x.sh\ngit -C $HD $CM -m y\nEOF
+commit-multiple|cat > $HD/f <<'EOF'\ngit -C $HD $CM -m y\nEOF\ngit -C $HD $CM -m x
+commit-multiple|git -C $HD $CM -m "\$(cat <<'EOF' >$HD/x.sh; chmod +x $HD/x.sh; $HD/x.sh; echo msg\ngit -C $HD $CM -m y\nEOF\n)"
+commit-multiple|git -C $HD $CM -F - <<'EOF' && sh $HD/x.sh\ngit -C $HD $CM -m y\nEOF
+commit-multiple|git -C $HD $CM -F - <<'EOF' && $HD/x.sh\ngit -C $HD $CM -m y\nEOF
+HXEOF
+# 작성자·날짜 변수, 한 줄 메시지 안의 커밋 글, 커밋 없는 중첩 셸은 지금처럼 판정한다 — 영수증 검증까지 가거나(게이트 실행 기록 없음)
+# 판정 대상이 아니다. 우회 할당도 그대로 우회다. 메시지를 파일로 넘기는 `-F <파일>` 은 메시지 글과 상관없이 영수증 검증으로 간다.
+for _ok in "GIT_COMMITTER_DATE='2026-01-01T00:00:00' git -C $HD $CM -m x" "GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e git -C $HD $CM -m x" \
+           "git -C $HD $CM -m \"fix git $CM twice\"" "git -C $HD $CM -F $HD/msg.txt" "echo \"<<'X'\"
+git -C $HD $CM -m x
+X"; do
+  _pr="$(hookdeny "$_ok")"
+  case "$_pr" in *"게이트 실행 기록 없음"*) ok "단일 커밋은 영수증 검증으로 간다 [$(printf '%s' "$_ok" | head -1 | cut -c1-45)]";;
+    *) ng "단일 커밋이 새 거부에 걸리거나 검증까지 못 간다 [$(printf '%s' "$_ok" | head -1 | cut -c1-45)]" "게이트 실행 기록 없음 [$_pr]";; esac
+done
+# 히어독 본문도 명령 줄로 센다 — 메시지 본문의 `git commit`·`bash -c 'git commit'`·`eval git commit` 글은 거부된다(의도된 과탐,
+# 우회는 `-F <파일>`). 셸 따옴표를 흉내 내 메시지 본문만 빼는 규칙은 다섯 번 뚫려 두지 않는다(DECISIONS.md 2026-11-26).
+while IFS='|' read -r _want _mb; do
+  _mb="$(printf '%b' "$_mb")"
+  _pr="$(hookdeny "$_mb")"
+  [ "$_pr" = "$_want" ] && ok "히어독 메시지 본문의 커밋 글도 명령으로 센다 [$_want: $(printf '%s' "$_mb" | tr '\n' '/' | cut -c1-45)]" \
+    || ng "히어독 메시지 본문의 커밋 글이 판정을 빠져나간다 [$(printf '%s' "$_mb" | tr '\n' '/' | cut -c1-45)]" "$_want [$_pr]"
+done <<MBEOF
+commit-multiple|git -C $HD $CM -F - <<'EOF'\nfix git $CM twice\nEOF
+commit-multiple|git -C $HD $CM -m "\$(cat <<'EOF'\nfix git $CM twice\ndon't\nEOF\n)"
+commit-multiple|git -C $HD $CM -m "\$(cat <<'EOF'\nReject commits nested in bash -c 'git $CM'\nEOF\n)"
+commit-multiple|git -C $HD $CM -F - <<'EOF'\ndeny eval git $CM too\nEOF
+commit-multiple|git -C $HD $CM -F - <<'EOF'\ndon't wrap in bash -c 'git $CM'\nEOF
+MBEOF
+# 앞 커밋 없는 단독 `"bash" -c "…여러 줄…"` 은 옛 훅처럼 판정하지 않는다(따옴표 붙은 셸 단어 — backlog 「문자열 실행 명령」).
+# 커밋 호출 없이 본문 글에 커밋 글 둘과 짝 없는 따옴표가 있는 편집 스크립트도 판정하지 않는다.
+for _no in "echo \"git $CM; git $CM\"" "bash -c 'git status'" "bash --rcfile /dev/null -c -- 'git status'" "\$SHELL -c 'git status'" \
+           "\"bash\" -c \"git -C $HD $CM -m 'a
+b'\"" "python3 - <<'PY'
+s = s.replace(\"git -C /a $CM -m y\", \"git -C /b $CM -m z\")
+print(\"it's done\") if s else it's
+PY"; do
+  _pr="$(hookdeny "$_no")"
+  [ -z "$_pr" ] && ok "커밋 아닌 명령은 판정하지 않는다 [$(printf '%s' "$_no" | tr '\n' '/' | cut -c1-50)]" \
+    || ng "커밋 아닌 명령이 거부된다 [$(printf '%s' "$_no" | tr '\n' '/' | cut -c1-50)]" "판정 없음 [$_pr]"
+done
+_pr="$(hookdeny "PREFLIGHT_SKIP=\"docs only\" git -C $HD $CM -m x")"
+[ "$_pr" = "docs only" ] && ok "사유 있는 우회는 그대로 우회다" || ng "사유 있는 우회가 새 거부에 걸린다" "docs only [$_pr]"
 case "$(hookdeny "PREFLIGHT_SKIP=1 git -C $HD $CM -m x")" in *bypass-without-reason*) ok "사유 없는 우회도 기록한다";;
   *) ng "형식값 우회 시도가 안 보인다" "bypass-without-reason";; esac
 case "$(hookdeny "git -C $HD $CM -m x")" in *"게이트 실행 기록 없음"*) ok "게이트 미통과도 기록한다 (가장 흔한 deny)";;
