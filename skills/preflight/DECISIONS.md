@@ -684,7 +684,8 @@ a=70 a_sessions=13 b=62 main=202 home=45 norepo=78 path_outside_repo=9
     **화이트리스트**로 `GIT_AUTHOR_{NAME,EMAIL,DATE}`·`GIT_COMMITTER_{NAME,EMAIL,DATE}` 여섯만 받는다. 이 여섯은 커밋 객체의 메타데이터만 바꾸고 대상 레포·
     인덱스·설정을 바꾸지 않으며, 실사용 4건이 전부 이것이다. `GIT_` 변수는 git 버전마다 늘어나므로(`GIT_CONFIG_PARAMETERS`·`GIT_CONFIG_GLOBAL` 등)
     위험한 쪽을 열거하면 새 변수가 빠져나간다.
-  - `commit-nested-shell` — 셸 단어 `sh|bash|zsh|dash|ksh|fish|csh|tcsh`(경로 붙은 것 포함) 뒤 같은 단순 명령(다음 구분자까지)에 짧은 옵션 묶음에
+  - `commit-nested-shell` — 셸 단어 `sh|bash|zsh|dash|ksh|fish|csh|tcsh`(경로 붙은 것 포함)나 변수 확장 하나뿐인 명령 단어(`$SHELL`·`"$BASH"`·
+    `${X}` — 무엇이 실행될지 정적으로 모른다) 뒤 같은 단순 명령(다음 구분자까지)에 짧은 옵션 묶음에
     `c` 가 든 토큰(`-c`·`-lc`·`-ec`)이 하나라도 있으면, 그 뒤 **남은 인자 전부**를 하나씩 다시 토큰화해 커밋 호출(또는 다시 중첩된 커밋)이 있다.
     `eval` 은 뒤 인자를 이은 글을 같은 방식으로 본다. 깊이 상한 3, 상한에 닿은 글은 `git … commit` 글이 있으면 중첩 커밋으로 본다.
     옵션을 하나씩 해석하지 않는다 — 첫 판은 옵션 뒤 첫 인자 하나만 골라 `bash -c -- '…'`(`--` 를 명령 문자열로 집음)과 `bash --rcfile X -c '…'`
@@ -706,24 +707,30 @@ a=70 a_sessions=13 b=62 main=202 home=45 norepo=78 path_outside_repo=9
     사용자 결정으로 제외 장치(`uncounted_lines`·`message_opener` 등)를 통째로 지웠다.
   - 판정기(python)가 예외로 죽으면 훅은 exit 0 으로 침묵한다. 그래서 판정 중 예외는 명령에 `git … commit` 글이 있으면 `commit-unparsed` 로 거부한다.
     첫 판은 `git --git-dir=X commit` 에서 IndexError 로 죽어 세 형태가 통과했고, 기존 「전역 옵션」 단언 3개가 잡았다.
-- **한계**: 중첩 셸은 셸 단어 여덟(`sh|bash|zsh|dash|ksh|fish|csh|tcsh`)의 c 옵션 인자와 `eval` 만 본다. 문자열을 명령으로 실행하는 그 밖의 것 —
-  `su -c`·`script -c`·`$SHELL -c`(변수라 셸 단어가 아니다)·`xargs`·`python3 -c 'os.system(…)'`·`ssh host '…'`·`bash <<<` — 은 보지 않는다.
+- **줄잇기**: 판정을 두 번 낸다 — 원문 그대로, 그리고 홀수 개 백슬래시+줄바꿈을 합친 글 — 그리고 엄격한 쪽을 쓴다(형태 거부는 어느 쪽이든,
+  커밋 수는 큰 값, 중첩·`GIT_` 환경변수는 OR, 첫 호출의 `-C` 값은 원문 것). 합친 판정을 원문 판정에 더하기만 하는 것은 셸의 주석·따옴표 안
+  줄잇기 규칙을 흉내 내지 않기 위해서다. 원문만 보면 `bash -c \⏎'…'`·`bash \⏎-c '…'`·`eval \⏎'…'` 의 인자가 다음 줄로 넘어가 중첩 셸·여러 커밋
+  판정을 빠져나갔고(PR 게이트 리뷰), 합친 글만 보면 짝수 개 백슬래시(`echo a\\⏎`)나 주석 안 `\⏎`(`… # note \⏎`) 가 다음 줄 커밋을 앞 단어·주석에
+  붙여 삼켰다(커밋 게이트 리뷰 두 번). 중첩 셸 인자 글도 같은 두 판정을 거친다. 경로 해석용 STRICT 정규식(명령 전체)은 그대로다.
+- **한계**: 중첩 셸은 셸 단어 여덟(`sh|bash|zsh|dash|ksh|fish|csh|tcsh`)·변수 확장 명령 단어의 c 옵션 인자와 `eval` 만 본다. 문자열을 명령으로
+  실행하는 그 밖의 것 — `su -c`·`script -c`·`xargs`·`python3 -c 'os.system(…)'`·`ssh host '…'`·`bash <<<` — 은 보지 않는다.
   c 옵션이 있는 셸 호출은 그 뒤 인자 전부를 보므로 `bash -c 'echo $0' 'git commit'` 처럼 명령 문자열이 아닌 인자의 커밋 글도 중첩으로 거부한다(과탐, 거부 쪽).
   `echo "git commit"` 처럼 셸·eval 이 아닌 명령의 인자 글은 지금처럼 판정하지 않는다. 메시지 본문의 커밋 글은 거부된다(위, 과탐 — 우회는
   `-F <파일>`). 남은 갈래는 docs/backlog.md 「커밋 판정의 남은 갈래 — …」.
-- **재생(2026-11-01~26 전사, 커밋 글이 든 Bash 호출 4136건, 직전 훅 대비)**: allow→deny 0, deny→allow 0. 사유만 바뀐 것 18건 — 해석 불가 경로·해석 불가 형태·영수증
+- **재생(2026-11-01~26 전사, 커밋 글이 든 Bash 호출 4212건, 직전 훅 대비)**: allow→deny 0, deny→allow 0. 사유만 바뀐 것 19건 — 해석 불가 경로·해석 불가 형태·영수증
   미통과로 막히던 여러 커밋 명령이 `commit-multiple` 로 막힌다.
-- **회귀**: `meta-test/engine.sh` 「deny 하는 자리는 전부 기록된다」 58개(가드 1 포함). deny 47형태는 사유 로그까지 본다 — 여러 커밋 5(백로그 4형태·두 줄 두 커밋),
+- **회귀**: `meta-test/engine.sh` 「deny 하는 자리는 전부 기록된다」 69개(가드 1 포함). deny 57형태는 사유 로그까지 본다 — 여러 커밋 5(백로그 4형태·두 줄 두 커밋),
   `GIT_` 4(`GIT_DIR`·`env GIT_WORK_TREE`·`export GIT_INDEX_FILE`·`GIT_CONFIG_*`), 중첩 셸 11(`bash -c`·`sh -lc`·`/bin/zsh -c`·`eval`·이중 `bash -c`·
-  `bash -c --`·`bash --rcfile X -c`·`fish -c`·`tcsh -c`·여러 줄 인자 2), 히어독 22(따옴표 없는 본문의 `$(git --git-dir=…)`·가짜 히어독 뒤 `--git-dir` 커밋 →
+  `bash -c --`·`bash --rcfile X -c`·`fish -c`·`tcsh -c`·여러 줄 인자 2), 줄잇기·변수 셸 단어 10(`bash -c \⏎'…'`·`bash \⏎-c '…'`·`eval \⏎'…'` →
+  `commit-nested-shell`, 대조 `&& \⏎git … commit`·짝수 백슬래시 `echo a\\⏎git … commit`·주석 안 `# c \⏎git … commit`·작은따옴표 안 `-m 'x \⏎y'; git … commit` → `commit-multiple`, `$SHELL -c`·`"$BASH" -c`·여러 줄 인자의 `${SHELL} -c` → `commit-nested-shell`), 히어독 22(따옴표 없는 본문의 `$(git --git-dir=…)`·가짜 히어독 뒤 `--git-dir` 커밋 →
   `commit-global-option`, 가짜 히어독 뒤·백틱 안 `GIT_DIR=` → `commit-git-env`, 셸이 실행하거나 파일로 써서 실행하는 본문·메시지 꼴 뒤에 명령이 붙은
   본문의 둘째 커밋·`bash -c` 커밋 → `commit-multiple`·`commit-nested-shell`), 메시지 본문 5(`-F - <<'X'`·`-m "$(cat <<'X'` 본문의 `git commit` 글 →
   `commit-multiple`, `bash -c 'git commit'` 글 → `commit-nested-shell`, `eval git commit` 글 → `commit-multiple`).
   영수증 검증(`게이트 실행 기록 없음`)까지 가는 6개 — 작성자·날짜 변수 2, 한 줄 메시지 안 글, `-F <파일>`, 가짜 따옴표 히어독 뒤의 유일한 커밋,
-  따옴표 히어독 본문 안 `eval "$(…)"` 뒤의 커밋. 판정 없음 3(`echo "git commit; git commit"`·`bash -c 'git status'`·`bash --rcfile X -c -- 'git status'`),
-  사유 있는 우회 1. 직전 훅으로는 deny 중 45개가 실패했다(나머지 2개는 직전 훅도 막던 `commit-global-option` 형태). 통과 쪽은 직전 훅에서도 통과한다.
+  따옴표 히어독 본문 안 `eval "$(…)"` 뒤의 커밋. 판정 없음 4(`echo "git commit; git commit"`·`bash -c 'git status'`·`bash --rcfile X -c -- 'git status'`·`$SHELL -c 'git status'`),
+  사유 있는 우회 1. 직전 훅으로는 deny 중 55개가 실패했다(나머지 2개는 직전 훅도 막던 `commit-global-option` 형태). 통과 쪽은 직전 훅에서도 통과한다.
   변이 — 세 검사를 하나씩 끔, `GIT_` 화이트리스트 끔, 셸 `-c` 를 옛 옵션 루프(첫 인자)로 되돌림, 셸 목록에서 fish·csh·tcsh 뺌, 폴백 인자 글을
-  첫 단어만 봄 — 에서 각각 해당 단언이 실패했다. 가드: 훅의 판정 python 블록(bash `"$( … )"` 안)에 `$(` 글이 없다 — 있으면 macOS bash 3.2 가
+  첫 단어만 봄, 줄잇기 합친 판정을 끔(원문만), 원문 판정을 끔(합친 글만 — 주석 안 줄잇기 단언이 실패), 변수 셸 단어 처리를 끔(토큰 경로·폴백 각각) — 에서 각각 해당 단언이 실패했다. 가드: 훅의 판정 python 블록(bash `"$( … )"` 안)에 `$(` 글이 없다 — 있으면 macOS bash 3.2 가
   짝 괄호로 읽어 훅 전체가 깨진다(이 작업 중 두 번 그렇게 깨졌다). 블록 주석에 `$(y)` 를 넣은 변이에서 실패한다.
 - **어디**: `hooks/preflight-gate.sh`(`commit_calls`·`scan`·`commit_verdict`, 거부 분기 셋), `meta-test/engine.sh`, `docs/backlog.md`(두 항목 닫힘).
   `ENGINE_VERSION` 은 그대로(훅의 거부 갈래 — 영수증·프로필 계약 무관).

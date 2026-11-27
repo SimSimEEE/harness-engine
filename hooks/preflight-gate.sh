@@ -84,6 +84,8 @@ def unq(v):
 # `--` 나 값 받는 긴 옵션(`--rcfile X`)마다 명령 문자열 자리가 달라져, 고르는 쪽은 매번 한 갈래를 놓친다.
 # 그 밖의 명령 인자 글(`echo "git commit"`)은 판정하지 않는다.
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "fish", "csh", "tcsh"}
+# 변수 확장 하나뿐인 명령 단어(`$SHELL`·`"$BASH"`·`${X}`)도 셸로 본다 — 무엇이 실행될지 정적으로 모른다(모르면 거부 쪽).
+VAR_WORD = r"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?"
 GIT_ENV_OK = {"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_DATE",
               "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_COMMITTER_DATE"}
 # 중첩 깊이 상한. 상한에 닿은 글은 다시 풀지 않고 `git … commit` 글이 있으면 중첩 커밋으로 본다(모르면 거부).
@@ -92,7 +94,7 @@ QC = "[" + chr(34) + chr(39) + "]?"
 WB = r"(?:^|(?<=[\s;&|(" + BQ + r"]))"
 ENV_RX = WB + r"(GIT_[A-Za-z0-9_]*)="
 SHELL_ALT = "sh|bash|zsh|dash|ksh|fish|csh|tcsh"
-NEST_RX = WB + r"(?:(?:\S*/)?(?:" + SHELL_ALT + r")(?=\s)[^;&|()" + chr(10) + r"]*?\s-[A-Za-z]*c[A-Za-z]*(?=\s|$)|eval(?=\s))"
+NEST_RX = WB + r"(?:(?:(?:\S*/)?(?:" + SHELL_ALT + r")|" + QC + VAR_WORD + QC + r")(?=\s)[^;&|()" + chr(10) + r"]*?\s-[A-Za-z]*c[A-Za-z]*(?=\s|$)|eval(?=\s))"
 LOOSE_CALL = r"git" + QC + r"\s+(?:[^;&|]*?\s)?" + QC + r"commit(?![A-Za-z0-9_-])"
 # 히어독 본문도 다른 줄과 똑같이 명령 줄로 센다(개수·중첩 판정 포함). 셸 따옴표를 정규식으로 흉내 내 메시지 본문만 빼는 규칙은
 # 매번 그 흉내를 속이는 형태가 나왔다. 메시지 글에 커밋 글이 있으면 거부되고, 메시지는 `-F <파일>` 로 넘기면 된다.
@@ -111,8 +113,7 @@ def new_state():
 def nested_has_commit(arg, depth):
     if depth + 1 > MAXDEPTH:
         return bool(re.search(LOOSE_CALL, arg, re.S))
-    sub = new_state()
-    scan(arg, depth + 1, sub)
+    sub = scan_both(arg, depth + 1)
     return bool(sub["first"] is not None or sub["nested"] or sub["verdict"])
 def nested_arg_text(tail):
     # 토큰화가 안 되는 줄에서 옵션 뒤 인자 글을 단순 명령 끝까지 모은다 — 따옴표 인자는 짝 따옴표까지(줄을 넘어도),
@@ -149,7 +150,7 @@ def commit_calls(toks, depth, st):
             while j < len(toks) and not is_sep(toks[j]):
                 parts.append(toks[j]); j += 1
             arg = " ".join(parts)
-        elif b in SHELLS:
+        elif b in SHELLS or re.fullmatch(VAR_WORD, t.lstrip(BQ)):
             j, rest = i + 1, []
             while j < len(toks) and not is_sep(toks[j]):
                 rest.append(toks[j]); j += 1
@@ -172,6 +173,24 @@ def commit_calls(toks, depth, st):
                 st["gitenv"] = True
         i = max(j, i + 1)
     return out
+def scan_both(text, depth):
+    # 원문 판정과 줄잇기(홀수 개 백슬래시+줄바꿈)를 합친 글의 판정을 둘 다 내고 엄격한 쪽을 쓴다. 줄로만 자르면
+    # `bash -c \⏎ "…"` 의 인자가 다음 줄로 넘어가 빠져나가고, 합친 글만 보면 주석·따옴표 안의 `\⏎` 가 다음 줄 커밋을 삼킨다.
+    # 셸의 주석·따옴표 안 줄잇기 규칙을 흉내 내지 않고, 합친 판정을 원문 판정에 더하기만 한다. first 는 원문의 것(경로 해석과 맞춘다).
+    raw = new_state()
+    scan(text, depth, raw)
+    joined_text = re.sub(r"(?<!\\)((?:\\\\)*)\\" + chr(10), r"\1", text)
+    if joined_text == text:
+        return raw
+    joined = new_state()
+    scan(joined_text, depth, joined)
+    raw["verdict"] = raw["verdict"] or joined["verdict"]
+    raw["n"] = max(raw["n"], joined["n"])
+    for k in ("nested", "gitenv", "env"):
+        raw[k] = raw[k] or joined[k]
+    if raw["first"] is None:
+        raw["first"] = joined["first"]
+    return raw
 def scan(text, depth, st):
     lines = text.split(chr(10))
     for i, line in enumerate(lines):
@@ -216,9 +235,8 @@ def commit_verdict(cmd):
     # 것이다. **같은 호출인지는 보지 않는다** — 둘 다 `-C` 가 없으면 값이 같아 대조를 지나고, 그때
     # CD_DIR 은 가짜 매치 앞에서 잘린다(docs/backlog.md 「대상 레포 해석 재료가 아직 정규식이다」).
     # 사유가 겹치면 형태(전역 옵션·해석 불가) → 여러 커밋 → 중첩 셸 → GIT_ 환경변수 순으로 하나를 낸다.
-    st = new_state()
     try:
-        scan(cmd, 0, st)
+        st = scan_both(cmd, 0)
     except Exception:
         # 판정기가 죽으면 훅이 exit 0 으로 침묵한다 — 커밋 글이 있으면 거부 쪽으로 닫는다.
         return ("commit-unparsed" if re.search(LOOSE_CALL, cmd, re.S) else ""), None

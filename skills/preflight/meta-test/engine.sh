@@ -3158,6 +3158,27 @@ b'\""; do
   [ "$_pr" = "commit-nested-shell" ] && ok "중첩 셸·eval 안의 커밋은 거부한다 [$(printf '%s' "$_ns" | cut -c1-40)]" \
     || ng "중첩 셸·eval 안의 커밋이 판정 없이 지나간다 [$(printf '%s' "$_ns" | cut -c1-40)]" "commit-nested-shell [$_pr]"
 done
+# 줄잇기(홀수 개 백슬래시+줄바꿈)를 합친 판정을 원문 판정에 더한다(엄격한 쪽) — 줄로만 자르면 `bash -c \⏎'…'` 의 인자가 다음 줄로
+# 넘어가 빠져나가고, 합친 글만 보면 주석·따옴표 안의 `\⏎` 가 다음 줄 커밋을 삼킨다. 셸의 주석·따옴표 규칙은 흉내 내지 않는다.
+# 홀수 개 백슬래시만 합친다 — 짝수 개(`echo a\\⏎`) 뒤 줄은 다음 명령으로 센다.
+# 변수 확장 하나뿐인 명령 단어(`$SHELL`·`"$BASH"`)도 셸로 본다. 표의 \0134\n 은 백슬래시+줄바꿈이다.
+while IFS='|' read -r _want _lc; do
+  _lc="$(printf '%b' "$_lc")"
+  _pr="$(hookdeny "$_lc")"
+  [ "$_pr" = "$_want" ] && ok "줄잇기·변수 셸 단어도 판정한다 [$_want: $(printf '%s' "$_lc" | tr '\n' '/' | cut -c1-45)]" \
+    || ng "줄잇기·변수 셸 단어가 판정을 빠져나간다 [$(printf '%s' "$_lc" | tr '\n' '/' | cut -c1-45)]" "$_want [$_pr]"
+done <<LCEOF
+commit-nested-shell|git -C $HD $CM -m x; bash -c \0134\n'git -C /b $CM -m y'
+commit-nested-shell|git -C $HD $CM -m x; bash \0134\n-c 'git -C /b $CM -m y'
+commit-nested-shell|git -C $HD $CM -m x; eval \0134\n'git -C /b $CM -m y'
+commit-multiple|git -C $HD $CM -m x && \0134\ngit -C /b $CM -m y
+commit-multiple|git -C $HD $CM -m x; echo a\0134\0134\ngit -C /b $CM -m y
+commit-multiple|git -C $HD $CM -m x # c \0134\ngit -C /b $CM -m y
+commit-multiple|git -C $HD $CM -m 'x \0134\ny'; git -C /b $CM -m z
+commit-nested-shell|\$SHELL -c 'git -C $HD $CM -m y'
+commit-nested-shell|"\$BASH" -c 'git -C $HD $CM -m y'
+commit-nested-shell|\${SHELL} -c "git -C $HD $CM -m 'a\nb'"
+LCEOF
 # 히어독 본문도 명령 줄로 판정한다 — 따옴표 없는 구분자의 본문은 확장되어 실행되고, 인자 글 안의 `<<` 는 히어독이 아니다.
 # 개수에서 빼는 것은 따옴표 구분자 본문뿐이다.
 while IFS='|' read -r _want _hx; do
@@ -3217,7 +3238,7 @@ commit-nested-shell|git -C $HD $CM -m "\$(cat <<'EOF'\nReject commits nested in 
 commit-multiple|git -C $HD $CM -F - <<'EOF'\ndeny eval git $CM too\nEOF
 commit-nested-shell|git -C $HD $CM -F - <<'EOF'\ndon't wrap in bash -c 'git $CM'\nEOF
 MBEOF
-for _no in "echo \"git $CM; git $CM\"" "bash -c 'git status'" "bash --rcfile /dev/null -c -- 'git status'"; do
+for _no in "echo \"git $CM; git $CM\"" "bash -c 'git status'" "bash --rcfile /dev/null -c -- 'git status'" "\$SHELL -c 'git status'"; do
   _pr="$(hookdeny "$_no")"
   [ -z "$_pr" ] && ok "커밋 아닌 명령은 판정하지 않는다 [$_no]" || ng "커밋 아닌 명령이 거부된다 [$_no]" "판정 없음 [$_pr]"
 done

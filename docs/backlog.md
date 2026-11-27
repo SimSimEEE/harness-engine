@@ -916,7 +916,7 @@ grep -n 'hj.exists()' make-harness-view.sh                                    # 
    메시지를 파일로 써서 `-F <파일>` 로 넘기라고 안내한다.
 2. **문장 범위**: 앞 문장의 일회성 할당 `GIT_PAGER=cat git log; git commit …` 도 `commit-git-env` 로 거부한다(과탐, fail-closed). 할당을 그 문장에만
    묶는 수정이 후보다.
-3. **문자열 실행 명령**: 문자열을 명령으로 실행하는 것 중 셸 단어 `-c`·`eval` 밖 — `su -c`·`script -c`·`$SHELL -c`·`python3 -c 'os.system(…)'`·
+3. **문자열 실행 명령**: 문자열을 명령으로 실행하는 것 중 셸 단어·변수 확장 명령 단어(`$SHELL`)의 `-c`·`eval` 밖 — `su -c`·`script -c`·`python3 -c 'os.system(…)'`·
    `ssh host '…'` — 은 판정하지 않는다. 그 전부터 있던 갈래다.
 4. **중첩 셸 인자 읽기**: 새 `commit-nested-shell` 판정이 놓치는 형태 둘 — 회귀는 아니다(직전 훅은 중첩 셸 커밋을 모두 놓쳤다).
    `bash 2>&1 -c '<커밋>'`·`eval 2>&1 '<커밋>'` 은 `is_sep` 가 `&` 든 리다이렉트 토큰(`>&`·`&>`)을 명령 끝으로 읽어 인자 탐색이 멈춘다(폴백
